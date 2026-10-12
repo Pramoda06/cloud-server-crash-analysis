@@ -510,7 +510,7 @@ class SystemModel:
 
         # --- network
         rtt = max(1.0, prof.get("net_latency", 18.0) + e["net_delay"] + 1.5 * nz["rtt"])
-        loss = min(99.0, prof.get("packet_loss", 0.08) + e["net_loss"])
+        loss = clamp(prof.get("packet_loss", 0.08) + e["net_loss"], 0.0, 100.0)
         V["rtt"], V["packet_loss"] = rtt, loss
         P["rtt"] = {"base path": (None, rtt - e["net_delay"]), "added latency": ("net_delay", e["net_delay"])}
         P["packet_loss"] = {"base loss": (None, loss - e["net_loss"]), "injected loss": ("net_loss", e["net_loss"])}
@@ -522,9 +522,12 @@ class SystemModel:
                 pr = (p ** k1) * (1 - p) * (p ** k2) * (1 - p)
                 combos.append((pr, rto * (2 ** k1 - 1) + rto * (2 ** k2 - 1)))
         delivered = sum(c[0] for c in combos)
-        giveup = max(0.0, 1 - delivered)
-        V["retrans_ms"] = sum(pr * x for pr, x in combos) / delivered if delivered > 0 else 0.0
-        P["retrans_ms"] = {"packet loss": ("packet_loss", V["retrans_ms"])}
+        giveup = max(0.0, 1.0 - delivered)
+        if delivered > 0:
+            V["retrans_ms"] = sum(pr * x for pr, x in combos) / delivered
+        else:
+            V["retrans_ms"] = None
+        P["retrans_ms"] = {"packet loss": ("packet_loss", V["retrans_ms"] if V["retrans_ms"] is not None else (e["timeout_ms"] - rtt))}
 
         # --- locks (deadlock lab)
         edges = self.wait_for_graph()
@@ -578,9 +581,13 @@ class SystemModel:
                            "disk reads (2 per request)": ("disk_latency", 2 * V["disk_latency"]),
                            "page-fault stalls": ("paging_penalty", V["paging_penalty"]),
                            "lock wait": ("lock_wait", V["lock_wait"]), "backlog wait": ("queue_wait", V["queue_wait"])}
-        V["response_ms"] = V["service_ms"] + rtt + V["retrans_ms"]
+        T = float(e["timeout_ms"])
+        if delivered > 0:
+            V["response_ms"] = min(T, V["service_ms"] + rtt + (V["retrans_ms"] or 0.0))
+        else:
+            V["response_ms"] = T
         P["response_ms"] = {"server processing": ("service_ms", V["service_ms"]), "network RTT": ("rtt", rtt),
-                            "retransmissions": ("retrans_ms", V["retrans_ms"])}
+                            "retransmissions": ("retrans_ms", V["retrans_ms"] if V["retrans_ms"] is not None else max(0.0, T - rtt - V["service_ms"]))}
 
         # --- timeouts / errors
         T = e["timeout_ms"]

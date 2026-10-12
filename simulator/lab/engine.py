@@ -256,6 +256,9 @@ class LabEngine:
                 if stale and any(e["start_ts"] > stale["requested_ts"] for e in self.episodes):
                     self.last_recovery = None
                 return True, "The server is already healthy"
+            if stale and stale.get("status") == "RECOVERING":
+                # Recovery is already active: actions re-applied without resetting recovery sequence or start timestamp
+                return True, "Recovery is already in progress — stabilizing system"
             self.recovery_seq += 1
             self.last_recovery = {
                 "id": self.recovery_seq, "requested_ts": now, "status": "RECOVERING", "ok_streak": 0,

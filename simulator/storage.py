@@ -98,7 +98,9 @@ SERVER_COLS = ["name", "server_type", "role", "os", "os_version", "cpu", "ram_gb
 class Store:
     def __init__(self, path, default_server=None):
         self.path = path
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
         self.lock = threading.Lock()
         with self._conn() as c:
             c.executescript(SCHEMA)

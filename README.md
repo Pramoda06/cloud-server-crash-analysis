@@ -49,11 +49,11 @@ One `SystemModel` per server is the single source of truth. Every 0.5 s, `step()
 
 | Subsystem | Rule (as implemented) |
 |---|---|
-| CPU | ρ = [min(workload·cores, batch procs) + λ·0.55 ms + paging overhead·cores + created procs + 3 %] / cores. ρ < 0.98: run queue relaxes to **Lq = ρ^√(2(c+1))/(1−ρ)** (Sakasegawa M/M/c). ρ ≥ 0.98: grows by (ρ−0.98)·c / 50 ms per second. Waiting time = queue × 50 ms ÷ cores. Request CPU wait × 2·w_batch/(w_batch+w_web), w = 1024·1.25^−nice |
-| Memory | Working set = 38 % (OS & services) + pressure + 1 MB × in-flight requests + created procs. over = (WS−80 %)/20 %. Page faults = 35 + 9000·over^2.2 /s. Paging overhead = 70·over^1.8 % CPU. Swap I/O = faults × 0.25 |
-| Disk | Demand = reads + writes + λ·0.57 + swap I/O + created procs. ρ < 0.98: **Lq = ρ²/(1−ρ)** (M/M/1), latency = S/(1−ρ) with S = 2.4 / 3 / 8 ms (NVMe / SSD / HDD). Overload: the backlog grows by (demand − capacity)/s and drains when demand falls |
-| Network | RTT = base + delay. Retransmissions: enumerate request/reply retry counts k with probability p^k(1−p), delay RTO·(2^k−1), RTO = max(200 ms, 2·RTT) |
-| Service | Capacity = live workers × 2·λ_base/4 × min(1, 1/ρ) × (1−0.85·over²), and 0 if web-master or database is down. Backlog B += (arrivals − capacity)·dt, max 1024; beyond that requests are refused. Response = 22 ms + CPU wait + 2·disk latency + page-fault stalls + lock wait + B/capacity + RTT + retransmissions. Timeouts = P(response > timeout), with service time exponential and network delay enumerated. Error rate = 1 − successful/attempts |
+| CPU | ρ = [min(workload·cores, batch procs) + λ·0.55 ms + paging overhead·cores + created procs + 3 %] / cores. ρ < 0.98: run queue relaxes to **Lq = ρ^√(2(c+1))/(1−ρ)** (Sakasegawa M/M/c approximation). ρ ≥ 0.98: grows by (ρ−0.98)·c / 50 ms per second. Run queue is bounded at ≤ 1200 processes. Waiting time = queue × 50 ms ÷ cores. Request CPU wait × 2·w_batch/(w_batch+w_web), w = 1024·1.25^−nice |
+| Memory | Working set ws = 38 % (OS & services) + pressure + 1 MB × in-flight requests + created procs. Pedagogical thrashing threshold at **ws > 80 %**: over = clamp((ws−80 %)/20 %, 0, 2), o1 = min(over, 1.0). Page faults = 35 + 9000·o1^2.2 + 12000·max(over−1, 0) /s. Paging overhead = min(90 %, 70·o1^1.8 + 15·max(over−1, 0)) % CPU. Available RAM is clamped to a kernel reserve floor of ≥ 0.5 % RAM. Swap used ≤ swap capacity |
+| Disk | Demand = reads + writes + λ·0.57 + swap I/O + created procs. ρ < 0.98: **Lq = ρ²/(1−ρ)**, latency = S/(1−ρ) with S = 2.4 / 3 / 8 ms (NVMe / SSD / HDD). Hardware parallelism modeled via c = cap · S / 1000 channels (14.4 parallel channels for NVMe). Backlog is bounded by **cap × 30 s** (180,000 IOPS for NVMe), capping maximum queue latency to ~30.1 s |
+| Network | RTT = base + delay. Retransmissions: enumerate retry counts k ∈ [0..5] with probability p^k(1−p), delay RTO·(2^k−1), RTO = max(200 ms, 2·RTT). At **100 % packet loss**, conditional retransmission delay is mathematically undefined (None / —) and client-observed latency is clamped to **timeout_ms** (2000 ms default), eliminating latency collapse artifacts |
+| Service | Capacity = live workers × 2·λ_base/4 × min(1, 1/ρ) × (1−0.85·over²), and 0 if web-master or database is down. Backlog B += (arrivals − capacity)·dt, max 1024; beyond that requests are refused. Response = 22 ms + CPU wait + 2·disk latency + page-fault stalls + lock wait + B/capacity + RTT + retransmissions, bounded by timeout_ms. Timeouts = P(response > timeout), with service time exponential and network delay enumerated. Error rate = 1 − successful/attempts |
 | Locks | Wait-for graph + DFS cycle search. 35 % of requests touch Resource A/B: +50 ms if held by a running process; until timeout if the holder is deadlocked |
 
 **Cascade links** (Advanced → *Cross-subsystem cascades*, on by default):
@@ -104,7 +104,12 @@ The thresholds above are the built-in defaults used by the detector.
 
 ## 6. Recovery
 
-Recovery starts when health first improves after its worst point. It completes when every rule is OK for 3 samples. Queues drain at the rate of spare capacity, so recovery is gradual.
+Recovery starts when health first improves after its worst point. It completes when every rule is OK for 3 consecutive samples (0.5 s apart). Queues drain at the rate of spare capacity, so recovery is gradual.
+
+**Recovery State Machine Idempotency:**
+- Triggering Recovery transitions the engine into `RECOVERING` status.
+- Repeated recovery requests while recovery is already active are strictly idempotent: baseline controls and cleanup are re-applied without allocating a new sequence ID, resetting `requested_ts`, or restarting the 20-second escalation timer.
+- Verification checks 6 health criteria (Service, Process, CPU, Memory, Disk, Deadlock). When all rules confirm below WARNING for 3 consecutive ticks, status advances to `RECOVERED`. If self-sustaining backlogs persist past 20 s, an escalation step flushes queues and restarts the web service.
 
 Recovery mechanisms:
 
@@ -134,9 +139,9 @@ If a feedback loop keeps the server down after the trigger is removed, the lab r
 ## 8. Files
 
 ```
-app.py                       Flask: pages + /api/lab/* (+ read-only routes for the previous version's history)
+app.py                       Flask: pages + /api/lab/* (+ read-only routes for legacy history)
 simulator/lab/graph.py       controls and the dependency graph metadata (labels, types, rules, explanations)
-simulator/lab/model.py       SystemModel: the simulation (state, nodes, contributions, processes, locks)
+simulator/lab/model.py       SystemModel: the active simulation engine (state, nodes, contributions, processes, locks)
 simulator/lab/detect.py      thresholds, levels, confirmation, primary/secondary attribution
 simulator/lab/trace.py       "why did this change?" — walks the contributions back to an input
 simulator/lab/rca.py         root-cause analysis of an episode
@@ -149,6 +154,12 @@ templates/                   overview, lab, monitor, analysis, processes, histor
 static/js/lab-core.js        polling, sliders, tiles, status, dependency graph, inspector, shared-axis charts
 static/js/lab-report.js      root-cause analysis rendering
 static/js/common.js, report.js   shared helpers + rendering of the previous version's experiments
+tests/                       automated test suite:
+  test_network.py            packet loss spectrum (0–100%), timeout bounds, undefined retransmission handling
+  test_memory_disk.py        80% RAM thrashing threshold, memory floors, NVMe M/M/c queueing & backlog caps
+  test_processes_deadlock.py process hierarchy, SIGHUP cascades, PID increments, deadlocks & preemption
+  test_engine_recovery.py    2-sample debouncing, recovery idempotency, 3-sample confirmation streak, reset
+  test_api_multiserver.py    API routes, input validation, and multi-server state isolation
 ```
 
 ## 9. Installation
@@ -161,19 +172,25 @@ pip install -r requirements.txt
 
 (Installs only `Flask` and `psutil`.)
 
-## 10. Running
+## 10. Running & Automated Testing
 
+### Start the application
 ```bash
 python app.py
 ```
 
 Open **http://127.0.0.1:5000**. On Windows the browser opens automatically. Stop the app with `Ctrl+C`.
-
 Options: `python app.py --port 8080`, `--no-browser`, `--host 0.0.0.0`.
 
-### Windows
+### Run automated tests
+```bash
+python -m unittest discover -s tests -p "test_*.py"
+```
 
-The easiest way is to double-click **`run.bat`**. On the first run it creates a `venv`, installs the requirements and starts the app. To do the same manually:
+Runs the 20 unit tests verifying the network boundary conditions, memory thrashing, disk queueing, process lifecycle, deadlock resolution, recovery state machine, and multi-server isolation.
+
+### Windows setup
+The easiest way is to double-click **`run.bat`**. On the first run it creates a `venv`, installs requirements, and starts the app. To do the same manually:
 
 ```bat
 cd "E:\OS-case study"
@@ -188,10 +205,8 @@ python app.py
 ```bash
 cd "/mnt/e/OS-case study"
 sudo apt install -y python3-venv python3-pip     # first time only
-bash run.sh                                       # or: python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt && python3 app.py
+bash run.sh
 ```
-
-Then open **http://localhost:5000** in your Windows browser. WSL2 forwards localhost automatically. If it does not, run `bash run.sh --host 0.0.0.0` and open the WSL IP address shown by `hostname -I`. In WSL, the host telemetry reflects the WSL virtual machine.
 
 ## 11. Viva Preparation
 
@@ -259,16 +274,13 @@ A failure that persists after its trigger is removed because of positive feedbac
 **17. Why is Little's law important here?**
 L = λ·W: the number of requests in flight equals arrival rate × time in the system. When latency rises, in-flight requests (and the memory they hold) rise with it — that is how a CPU problem becomes a memory problem.
 
-## 12. Limitations (honest)
+## 12. Architectural Reality & Limitations (honest)
 
-- It is a **model**, not a measurement. The queueing formulas (Sakasegawa M/M/c, M/M/1), the paging curve and the TCP retransmission enumeration are standard textbook relationships with illustrative constants. Absolute values (milliseconds, IOPS) are plausible, not calibrated to a real server.
-- CPU, disk and request queues are steady-state formulas plus explicit backlogs — not an event-by-event scheduler or block-layer simulation. The disk is modelled as one queue (no parallel NVMe queues, no read/write difference in service time, no cache).
-- Memory is a single working-set number: no per-process page tables, no page cache, no OOM killer (killing a process is the operator's action).
-- The network is one client path: no topology, congestion control or bandwidth limit.
-- Cascade feedback uses the previous sample (0.5 s delay); positive feedback can latch into a self-sustaining failure — intended, and reported.
-- Primary/secondary attribution is a rule based on contribution shares (≥ 30 %) and timing. It is explainable, but it is not a proof of causality.
-- Controls are clamped and backlogs bounded, so extreme settings saturate instead of growing forever.
-- Snapshots record values, not the full internal state; replay reproduces runs exactly only from a recording (with the host anchor off).
-- Experiments from the previous version are kept read-only in Experiment History; the old single-scenario Run Experiment flow was replaced by the System Lab and the Experiment Builder (its six scenarios are predefined experiments 1–6).
-- One operator at a time per server; several browser tabs can watch the same server.
+- **Dual-Engine Architecture:** The active runtime engine is strictly `simulator/lab/engine.py` (`LabEngine`), instantiated once per server by `ServerManager`. Legacy files in the repository root (`simulator/engine.py`, `simulator/failure_simulator.py`) belong to Version 1; they are retained solely for backward compatibility when reading historically recorded runs via `/api/meta` and `/api/experiments`.
+- **Pedagogical Simplifications:**
+  - **Memory Thrashing Threshold:** The working-set thrashing point at $ws > 80\%$ is an intentional educational threshold to demonstrate page-fault explosions without requiring complex kernel zone watermarks (`min_free_kbytes`).
+  - **No Autonomous Kernel OOM-Killer:** The simulation intentionally does not kill processes automatically under extreme memory pressure. This design allows students to observe sustained thrashing and examine the resulting cascade into swap and disk I/O. Memory reclamation is initiated through operator intervention (killing the hog process) or automated Recovery.
+- **Queueing Models:** CPU and disk queues use standard queueing formulas (Sakasegawa $M/M/c$, multi-channel NVMe queueing) with bounded backlogs rather than tick-by-tick microarchitectural event simulation.
+- **Network Scope:** Retransmission delay models single client-server round trips with exponential backoff and timeout bounding; it does not simulate topological BGP routing or full congestion window (CWND) dynamics.
+- **Multi-Server Isolation:** Virtual servers maintain strictly segregated state, process tables, detection rules, and event histories in independent `LabEngine` instances.
 

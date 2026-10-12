@@ -185,7 +185,7 @@ def code_of(sid):
 
 def build_spec(row):
     """Saved server row -> engine spec (same keys as config.SERVER, plus extras)."""
-    sid = row["id"]
+    sid = row.get("id", 1)
     osd = OPERATING_SYSTEMS.get(row["os"], OPERATING_SYSTEMS["Ubuntu Server"])
     family = osd["family"]
     kernel = osd["versions"].get(row["os_version"], "")
@@ -236,7 +236,7 @@ def build_spec(row):
         "filesystem": row["filesystem"],
         "network_type": row["network_type"],
         "connection": row["connection"],
-        "created_at": row["created_at"],
+        "created_at": row.get("created_at", ""),
         # --- normal workload profile (drives the baseline) ---
         "profile": {
             "offered_load": float(load), "read_iops": float(rio), "write_iops": float(wio),
