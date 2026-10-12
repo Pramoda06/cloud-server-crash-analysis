@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Run #{{ rid }}{% endblock %}
+{% block content %}
+<div class="page wide">
+  <div class="crumbs"><a href="/history">Experiment History</a> / Run #{{ rid }}</div>
+  <div class="page-head">
+    <div><h1 id="title">Run #{{ rid }}</h1><div class="q" id="sub"></div></div>
+    <div class="head-actions">
+      <button type="button" class="btn btn-primary btn-sm" id="btnReplay" title="Reset the server and reproduce this run sample for sample">Replay this run</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="btnJson">Download configuration (JSON)</button>
+    </div>
+  </div>
+  <section class="card">
+    <div class="tabs" id="tabs"></div>
+    <div class="cgrid" id="charts"></div>
+    <div class="chart-legend"><span><i style="background:rgba(168,107,12,.25)"></i>WARNING</span><span><i style="background:rgba(196,86,26,.25)"></i>DEGRADED</span><span><i style="background:rgba(192,48,48,.3)"></i>CRITICAL / FAILED</span><span><i class="dash"></i>threshold</span><span>hover a graph to line up all of them</span></div>
+  </section>
+  <div id="eps"></div>
+  <div class="two-col" style="margin-top:20px">
+    <section class="card"><div class="card-head"><h2>Timeline</h2><span class="aside" id="evCount"></span></div><div class="events" id="events"></div></section>
+    <section class="card"><div class="card-head"><h2>Reproducible configuration</h2></div><div id="cfg"></div></section>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/lab-report.js') }}"></script>
+<script>
+(async function () {
+  await LAB.loadMeta();
+  OS.startHealthPolling();
+  const $ = OS.$;
+  const R = await OS.api("/api/lab/runs/{{ rid }}");
+  LAB.samples = R.samples;
+  $("title").textContent = `Run #${R.id} — ${R.name}`;
+  $("sub").textContent = `${R.created} · ${R.kind}${R.replay_of ? " (replay of #" + R.replay_of + ")" : ""} · ${LAB.secs(R.duration_s)} · worst state ${R.peak_health}`;
+  let tab = "cpu", charts = [];
+  const TABS = LAB.GROUPS;
+  $("tabs").innerHTML = TABS.map(([k, n]) => `<button type="button" data-t="${k}" class="${k === tab ? "sel" : ""}">${n}</button>`).join("");
+  $("tabs").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; tab = b.dataset.t; $("tabs").querySelectorAll("button").forEach(x => x.classList.toggle("sel", x === b)); draw(); });
+  function draw() {
+    charts.forEach(c => c.chart.destroy());
+    const keys = TABS.find(t => t[0] === tab)[2];
+    $("charts").innerHTML = keys.map((k, i) => `<div class="chart"><div class="ch">${OS.esc((LAB.CHART_DEF[k] || { t: LAB.label(k) }).t)}<span class="now" id="pk${i}"></span></div><div class="chart-box"><canvas id="cv${i}"></canvas></div></div>`).join("");
+    charts = [];
+    keys.forEach((k, i) => charts.push(LAB.makeChart($("cv" + i), k, charts)));
+    const s = R.samples, xmin = s.length ? s[0].ts : 0, xmax = s.length ? s[s.length - 1].ts : 1;
+    LAB.fillCharts(charts, s, xmin, xmax, R.events);
+    charts.forEach((c, i) => { const vals = s.map(x => x[c.keys[0]]).filter(v => v != null); $("pk" + i).textContent = vals.length ? "peak " + LAB.fmt(c.keys[0], Math.max(...vals)) : ""; });
+  }
+  draw();
+  $("eps").innerHTML = (R.episodes || []).map(ep => `<h2 class="section-title" style="margin:26px 0 10px">Failure episode #${ep.id} — ${OS.esc(ep.peak_name)}</h2>${LAB.renderRCA(ep)}`).join("")
+    || '<section class="card" style="margin-top:20px"><div class="muted">No failure occurred during this run — every detection rule stayed below its warning threshold.</div></section>';
+  $("events").innerHTML = R.events.filter(e => e.kind !== "THRESHOLD" || e.level === "fail").map(LAB.eventRow).join("");
+  $("evCount").textContent = R.events.length + " events";
+  const c = R.config;
+  $("cfg").innerHTML = `<div class="kvx"><span>Random seed</span><b class="mono">${c.seed}</b></div>
+    <div class="kvx"><span>Cascades</span><b>${c.settings.cascade ? "on" : "off"}</b></div><div class="kvx"><span>Host-anchored baseline</span><b>${c.settings.anchor ? "on (not exactly reproducible)" : "off (deterministic)"}</b></div>
+    <div class="label" style="margin-top:10px">Initial controls</div>${LAB.meta.controls.map(x => `<div class="kvx"><span>${OS.esc(x.label)}</span><b class="mono">${LAB.fmtCtl(x, c.controls[x.key])} ${OS.esc(x.unit)}</b></div>`).join("")}
+    <div class="label" style="margin-top:10px">Logged changes (${R.log.length}) — applied at the same sample on replay</div>
+    <div class="small mono">${R.log.slice(0, 60).map(o => `t+${(o.at_tick * LAB.meta.tick).toFixed(1)}s ${o.op === "set" ? o.key + " = " + o.value : o.op === "action" ? o.action + (o.target ? " " + o.target : "") + (o.rid ? " " + o.rid : "") : o.op + " " + (o.key || o.check || "") + " = " + o.value}`).join("<br>")}${R.log.length > 60 ? "<br>…" : ""}</div>`;
+  $("btnReplay").addEventListener("click", () => LAB.post(`/api/lab/runs/${R.id}/replay`).then(() => { LAB.toast("Replaying — the server was reset with the same seed"); setTimeout(() => (location.href = "/monitor"), 900); }));
+  $("btnJson").addEventListener("click", () => {
+    const blob = new Blob([JSON.stringify({ run: R.id, name: R.name, config: R.config, program: R.program, log: R.log }, null, 2)], { type: "application/json" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `run-${R.id}-config.json`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  });
+})();
+</script>
+{% endblock %}

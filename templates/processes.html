@@ -1,0 +1,257 @@
+{% extends "base.html" %}
+{% block title %}Process & Resource Lab{% endblock %}
+{% block content %}
+<div class="page wide">
+  <div class="page-head">
+    <div>
+      <h1>Process &amp; Resource Lab</h1>
+      <div class="q">Study individual processes and how they consume and compete for CPU, memory, disk and locks: which processes are active, what each one uses, and how a change in workload affects them.</div>
+    </div>
+    <div class="head-actions"><span id="hPill"></span><a class="btn btn-ghost btn-sm" href="/lab">System Lab →</a></div>
+  </div>
+  <div class="tabs" id="tabs"></div>
+
+  <!-- PROCESSES -->
+  <div data-pane="proc">
+    <div class="two-col">
+      <section class="card">
+        <div class="card-head"><h2>Create a process</h2><span class="aside">fork() → NEW → READY</span></div>
+        <div class="chips" id="create">
+          <button type="button" data-k="cpu">CPU-bound (1 core)</button><button type="button" data-k="memory">Memory-hungry (1 GB)</button>
+          <button type="button" data-k="io">I/O-bound (400 IOPS)</button><button type="button" data-k="idle">Idle</button>
+        </div>
+        <p class="small muted" style="margin-bottom:0">A new process adds its load to the simulated server: a CPU-bound one competes for a core, a memory-hungry one grows the working set, an I/O-bound one adds disk requests. Kill it and the load disappears.</p>
+      </section>
+      <section class="card">
+        <div class="card-head"><h2>Process states now</h2></div>
+        <div class="legend-states" id="stateCounts"></div>
+        <p class="small muted" style="margin:0">RUNNING = on a vCPU · READY = runnable, waiting in the run queue · WAITING = sleeping until disk I/O / a page-in completes · BLOCKED = waiting for a lock · SLEEPING = idle · TERMINATED = exited (exit code shown) · RESTARTING = being re-created by the supervisor.</p>
+      </section>
+    </div>
+    <section class="card" style="margin-top:20px">
+      <div class="card-head"><h2>Process table</h2><span class="aside">simulated processes of {{ server.id }}</span><button type="button" class="btn btn-ghost btn-sm" id="btnReap" style="margin-left:8px">Reap terminated</button></div>
+      <div id="ptable"></div>
+    </section>
+  </div>
+
+  <!-- DEADLOCK -->
+  <div data-pane="dead" hidden>
+    <div class="dl-cols">
+      <section class="card">
+        <div class="card-head"><h2>Resource allocation graph</h2><span class="aside" id="dlVerdict"></span></div>
+        <div id="rag"></div>
+        <p class="small muted" style="text-align:center">Solid arrow: resource → the process that <b>holds</b> it · dashed: process → the resource it is <b>waiting for</b>. Simulated locks only — this application never blocks.</p>
+        <div class="label">Coffman conditions (all four are needed for deadlock)</div>
+        <ul class="coffman2" id="coff"></ul>
+        <div id="dlDetect" class="small"></div>
+      </section>
+      <section class="card">
+        <div class="card-head"><h2>Lock controls</h2></div>
+        <div id="txn"></div>
+        <div class="stress-row">
+          <button type="button" class="btn btn-danger btn-sm" id="btnForm">Form a deadlock (P1↔P2)</button>
+          <button type="button" class="btn btn-danger btn-sm" id="btnForm3">3-process cycle</button>
+        </div>
+        <div class="label" style="margin-top:16px">Recovery</div>
+        <div class="stress-row" style="margin-top:4px">
+          <button type="button" class="btn btn-success btn-sm" id="btnVictim">Terminate a victim</button>
+          <button type="button" class="btn btn-ghost btn-sm" id="btnPreempt">Pre-empt its lock</button>
+        </div>
+        <label class="toggle-row" style="margin-top:14px"><input type="checkbox" id="setOrder"><span><b>Prevention: lock-ordering policy</b><span class="small muted">Requests must follow A &lt; B &lt; C, which makes circular wait impossible. Try forming the deadlock with it on.</span></span></label>
+        <div class="label" style="margin-top:16px">Effect on the service</div>
+        <div class="ltiles" id="dlTiles"></div>
+      </section>
+    </div>
+  </div>
+
+  <!-- MEMORY -->
+  <div data-pane="mem" hidden>
+    <div class="two-col">
+      <section class="card"><div class="card-head"><h2>Memory controls</h2></div><div id="memCtl"></div></section>
+      <section class="card"><div class="card-head"><h2>Physical memory</h2><span class="aside" id="memFlag"></span></div><div id="memViz"></div></section>
+    </div>
+  </div>
+
+  <!-- DISK -->
+  <div data-pane="disk" hidden>
+    <div class="two-col">
+      <section class="card"><div class="card-head"><h2>Disk workload</h2></div><div id="diskCtl"></div></section>
+      <section class="card"><div class="card-head"><h2>Block I/O path</h2><span class="aside" id="diskFlag"></span></div><div id="diskViz"></div></section>
+    </div>
+  </div>
+
+  <!-- NETWORK -->
+  <div data-pane="net" hidden>
+    <div class="two-col">
+      <section class="card"><div class="card-head"><h2>Network &amp; traffic</h2></div><div id="netCtl"></div></section>
+      <section class="card"><div class="card-head"><h2>Client ↔ server path</h2><span class="aside" id="netFlag"></span></div><div id="netViz"></div></section>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(async function () {
+  await LAB.loadMeta();
+  const $ = OS.$, M = LAB.meta, S = M.server;
+  const TABS = [["proc", "Processes"], ["dead", "Deadlock"], ["mem", "Memory"], ["disk", "Disk"], ["net", "Network"]];
+  let tab = (location.hash || "#proc").slice(1);
+  if (!TABS.some(t => t[0] === tab)) tab = "proc";
+  $("tabs").innerHTML = TABS.map(([k, n]) => `<button type="button" data-t="${k}">${n}</button>`).join("");
+  const show = () => { $("tabs").querySelectorAll("button").forEach(b => b.classList.toggle("sel", b.dataset.t === tab)); document.querySelectorAll("[data-pane]").forEach(p => (p.hidden = p.dataset.pane !== tab)); history.replaceState(null, "", "#" + tab); };
+  $("tabs").addEventListener("click", e => { const b = e.target.closest("button"); if (b) { tab = b.dataset.t; show(); if (LAB.st) render(LAB.st); } });
+  show();
+  const act = (b, ok) => LAB.post("/api/lab/action", b).then(r => LAB.toast(ok || r.result));
+
+  /* processes */
+  $("create").addEventListener("click", e => { const b = e.target.closest("button"); if (b) act({ action: "create", kind: b.dataset.k }); });
+  $("btnReap").addEventListener("click", () => act({ action: "reap" }));
+  $("ptable").addEventListener("click", e => {
+    const b = e.target.closest("button[data-a]"); if (!b) return;
+    const pid = Number(b.dataset.pid);
+    if (b.dataset.a === "kill") act({ action: "kill", pid, signal: b.dataset.sig || "SIGKILL" });
+    if (b.dataset.a === "restart") act({ action: "restart", pid });
+    if (b.dataset.a === "nice") act({ action: "renice", pid, nice: Number(b.dataset.n) });
+  });
+  const KIND = { master: "web service (master)", worker: "web worker", db: "database", agent: "monitoring", txn: "transaction",
+    batch: "batch job (CPU workload)", memhog: "memory-hungry", custom_cpu: "created · CPU-bound", custom_memory: "created · memory", custom_io: "created · I/O", custom_idle: "created · idle" };
+  function procTable(s) {
+    const rows = s.processes.map(p => {
+      const dead = p.state === "TERMINATED";
+      const acts = dead ? `<button type="button" class="btn btn-success" data-a="restart" data-pid="${p.pid}">Restart</button>`
+        : p.state === "RESTARTING" || p.state === "NEW" ? "" :
+        `<button type="button" class="btn btn-ghost bad" data-a="kill" data-pid="${p.pid}" data-sig="SIGKILL" title="SIGKILL">Kill</button><button type="button" class="btn btn-ghost" data-a="kill" data-pid="${p.pid}" data-sig="SIGSEGV" title="Simulate a crash (SIGSEGV)">Crash</button><button type="button" class="btn btn-ghost" data-a="nice" data-pid="${p.pid}" data-n="${Math.max(-20, p.nice - 5)}" title="Raise priority (nice −5)">↑ prio</button><button type="button" class="btn btn-ghost" data-a="nice" data-pid="${p.pid}" data-n="${Math.min(19, p.nice + 5)}" title="Lower priority (nice +5)">↓ prio</button>`;
+      return `<tr><td class="mono">${p.pid}</td><td><b>${OS.esc(p.name)}</b>${p.critical ? ' <span class="muted small">(critical)</span>' : ""}<span class="sub">${OS.esc(KIND[p.kind] || p.kind)}</span></td>
+        <td><span class="st ${p.state}">${p.state}</span></td><td class="mono">${dead ? "0.0" : Number(p.cpu || 0).toFixed(1)}%</td>
+        <td class="mono">${Math.round(p.mem_mb || 0).toLocaleString()} MB</td><td class="mono">${p.nice > 0 ? "+" : ""}${p.nice}</td>
+        <td class="mono">${p.holds.length ? p.holds.join(", ") : "—"}</td><td class="mono">${p.waiting_for || "—"}</td>
+        <td class="muted small">${OS.esc(p.exit || p.info || "")}</td><td><div class="acts">${acts}</div></td></tr>`;
+    }).join("");
+    return `<div class="tbl-wrap"><table class="data compact procs"><thead><tr><th>PID</th><th>Process</th><th>State</th><th>CPU</th><th>Memory</th><th>nice</th><th>Holds</th><th>Waits for</th><th>Note</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  }
+
+  /* deadlock */
+  $("btnForm").addEventListener("click", () => act({ action: "form_deadlock" }));
+  $("btnForm3").addEventListener("click", () => act({ action: "form_deadlock", three: true }));
+  $("btnVictim").addEventListener("click", () => act({ action: "resolve_deadlock", how: "victim" }));
+  $("btnPreempt").addEventListener("click", () => act({ action: "resolve_deadlock", how: "preempt" }));
+  $("setOrder").addEventListener("change", e => LAB.post("/api/lab/settings", { lock_ordering: e.target.checked }));
+  $("txn").addEventListener("click", e => {
+    const b = e.target.closest("button[data-t]"); if (!b) return;
+    if (b.dataset.r) act({ action: "acquire", target: b.dataset.t, rid: b.dataset.r });
+    else if (b.dataset.a === "release") act({ action: "release", target: b.dataset.t });
+    else if (b.dataset.a === "kill") act({ action: "kill", target: b.dataset.t });
+    else if (b.dataset.a === "restart") act({ action: "restart", target: b.dataset.t });
+  });
+  function rag(s) {
+    const txn = s.processes.filter(p => p.kind === "txn"), res = s.resources;
+    const pos = {}, W = 520, H = 300;
+    const P = [[90, 70], [430, 70], [260, 250]], R = { A: [90, 230], B: [430, 230], C: [260, 60] };
+    txn.forEach((p, i) => (pos["p" + p.pid] = P[i]));
+    res.forEach(r => (pos["r" + r.id] = R[r.id]));
+    const name = {}; txn.forEach(p => (name[p.pid] = p.name.split(" ").pop()));
+    const cyc = new Set(s.deadlock.cycle.map(n => n.split(" ").pop()));
+    const lines = [];
+    const arrow = (a, b, kind, hot, label) => {
+      const [x1, y1] = pos[a], [x2, y2] = pos[b], dx = x2 - x1, dy = y2 - y1, L = Math.hypot(dx, dy) || 1;
+      const ax = x1 + dx / L * 32, ay = y1 + dy / L * 32, bx = x2 - dx / L * 36, by = y2 - dy / L * 36;
+      const col = hot ? "#c03030" : kind === "held" ? "#475467" : "#a86b0c";
+      const lx = ax + (bx - ax) * 0.3, ly = ay + (by - ay) * 0.3;          // label near the tail: never overlaps on crossings
+      lines.push(`<line x1="${ax}" y1="${ay}" x2="${bx}" y2="${by}" stroke="${col}" stroke-width="${hot ? 2.6 : 1.8}" ${kind === "wait" ? 'stroke-dasharray="6 4"' : ""} marker-end="url(#rg-${hot ? "hot" : kind})"/>
+        <text x="${lx + 6}" y="${ly - 6}" font-size="11" font-weight="600" fill="${col}">${label}</text>`);
+    };
+    res.forEach(r => { if (r.holder != null && pos["p" + r.holder]) arrow("r" + r.id, "p" + r.holder, "held", cyc.has(name[r.holder]), "held by"); });
+    txn.forEach(p => { if (p.waiting_for && pos["r" + p.waiting_for]) arrow("p" + p.pid, "r" + p.waiting_for, "wait", cyc.has(name[p.pid]), "waits for"); });
+    const stc = { RUNNING: ["#e8f5ee", "#157f4a"], READY: ["#eef2f7", "#475467"], BLOCKED: ["#fdf0e8", "#c4561a"], TERMINATED: ["#fcecec", "#c03030"], SLEEPING: ["#f8f9fb", "#98a2b3"], RESTARTING: ["#eaf1fc", "#2667c9"] };
+    const nodes = txn.map(p => { const [x, y] = pos["p" + p.pid], c = stc[p.state] || stc.READY;
+      return `<circle cx="${x}" cy="${y}" r="28" fill="${c[0]}" stroke="${c[1]}" stroke-width="2.2"/><text x="${x}" y="${y + 2}" text-anchor="middle" font-size="16" font-weight="700" fill="#1d2433">${name[p.pid]}</text><text x="${x}" y="${y + 16}" text-anchor="middle" font-size="8.5" font-weight="700" fill="${c[1]}">${p.state}</text>`; }).join("")
+      + res.map(r => { const [x, y] = pos["r" + r.id]; return `<g class="res ${r.holder == null ? "free" : ""}"><rect x="${x - 30}" y="${y - 24}" width="60" height="48" rx="8"/><text x="${x}" y="${y - 3}" text-anchor="middle" font-size="10.5" fill="#687385">Resource</text><text x="${x}" y="${y + 14}" text-anchor="middle" font-size="16" font-weight="700" fill="#1d2433">${r.id}</text></g>`; }).join("");
+    const mk = (id, c) => `<marker id="rg-${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="${c}"/></marker>`;
+    return `<svg class="rag" viewBox="0 0 ${W} ${H}" role="img" aria-label="Resource allocation graph"><defs>${mk("held", "#475467")}${mk("wait", "#a86b0c")}${mk("hot", "#c03030")}</defs>${lines.join("")}${nodes}</svg>`;
+  }
+  function txnCtl(s) {
+    return s.processes.filter(p => p.kind === "txn").map(p => {
+      const nm = p.name, short = nm.split(" ").pop(), dead = p.state === "TERMINATED";
+      const st = `<span class="st ${p.state}">${p.state}</span>`;
+      const res = s.resources.map(r => `<button type="button" class="btn btn-ghost btn-sm" data-t="${nm}" data-r="${r.id}" ${dead || p.state === "BLOCKED" || r.holder === p.pid ? "disabled" : ""}>request ${r.id}</button>`).join("");
+      return `<div class="txn-ctl"><b>${short}</b> ${st} <span class="small muted">${p.holds.length ? "holds " + p.holds.join(", ") : "holds nothing"}${p.waiting_for ? " · waits for " + p.waiting_for : ""}</span>
+        <div class="row">${res}<button type="button" class="btn btn-ghost btn-sm" data-t="${nm}" data-a="release" ${p.holds.length ? "" : "disabled"}>release all</button>
+        ${dead ? `<button type="button" class="btn btn-success btn-sm" data-t="${nm}" data-a="restart">restart</button>` : `<button type="button" class="btn btn-ghost btn-sm bad" data-t="${nm}" data-a="kill">kill</button>`}</div></div>`;
+    }).join("");
+  }
+
+  /* memory / disk / network labs: controls are the same model controls as the System Lab */
+  function mountCtl(box, keys) { box.innerHTML = ""; keys.forEach(k => box.appendChild(LAB.controlEl(LAB.spec[k]))); }
+  mountCtl($("memCtl"), ["mem_demand", "mem_procs"]);
+  mountCtl($("diskCtl"), ["disk_read", "disk_write"]);
+  mountCtl($("netCtl"), ["req_rate", "net_delay", "net_loss", "conn_fail", "timeout_ms"]);
+  const bar = (label, val, parts) => `<div class="bar-row"><div class="bl"><span>${label}</span><span class="mono">${val}</span></div><div class="bar">${parts.map(([w, c, t]) => `<i style="width:${Math.max(0, Math.min(100, w))}%;background:${c}" title="${t || ""}"></i>`).join("")}</div></div>`;
+  function memViz(s) {
+    const v = s.values, ram = S.ram_mb, ws = v.mem_ws, osb = s.baseline.mem_ws || 38;
+    const hog = s.controls.mem_demand, n = s.controls.mem_procs;
+    const flag = v.paging_overhead >= 25 && v.page_faults >= 3000 ? ["bad", "THRASHING DETECTED"] : v.page_faults > 500 ? ["warn", "THRASHING RISK"] : ["ok", "fits in RAM"];
+    $("memFlag").innerHTML = `<span class="flag ${flag[0]}">${flag[1]}</span>`;
+    return bar(`RAM (${Math.round(ram / 1024)} GB) — working set`, `${LAB.num(ws)}% of RAM`, [[osb, "#667085", "OS & services"], [hog, "#c03030", "memory-hungry processes"], [Math.max(0, ws - osb - hog), "#7a4fc9", "in-flight requests + created processes"]])
+      + bar("Available memory", LAB.fmt("mem_avail", v.mem_avail), [[v.mem_avail / ram * 100, "#157f4a"]])
+      + bar("Page faults", LAB.fmt("page_faults", v.page_faults), [[Math.min(100, v.page_faults / 100), "#c4561a"]])
+      + bar("Paging (CPU time spent moving pages)", `${LAB.num(v.paging_overhead)}% CPU`, [[v.paging_overhead, "#c03030"], [100 - v.paging_overhead, "#d1e7d9"]])
+      + `<p class="small muted">${n > 0 && hog > 0 ? `${n} memory-hungry process${n > 1 ? "es" : ""} × ${LAB.num(hog / n * ram / 100 / 1024)} GB each. ` : ""}Thrashing is not "many page faults": it is detected only when page faults ≥ ${LAB.st.thresholds_live.memory.page_faults.C}/s AND paging takes ≥ ${LAB.st.thresholds_live.memory.paging_overhead.C}% of CPU time, so too little time is left for useful work.</p>`;
+  }
+  function diskViz(s) {
+    const v = s.values, cap = S.disk_iops_capacity;
+    const flag = v.io_queue > 16 || v.disk_latency > 100 ? ["bad", "BOTTLENECK"] : v.io_queue > 4 ? ["warn", "QUEUEING"] : ["ok", "keeping up"];
+    $("diskFlag").innerHTML = `<span class="flag ${flag[0]}">${flag[1]}</span>`;
+    const st = { "NVMe": 2.4, "SSD": 3.0, "HDD": 8.0 }[S.storage_type] || 2.4;
+    return `<div class="pipe"><div class="ps"><div class="k">Requests generated</div><div class="v">${LAB.num(v.disk_demand)}<span class="small"> /s</span></div></div><span class="pa">→</span>
+      <div class="ps"><div class="k">I/O queue</div><div class="v">${LAB.num(v.io_queue)}</div></div><span class="pa">→</span>
+      <div class="ps"><div class="k">Service (${st} ms each)</div><div class="v">${LAB.num(v.disk_util)}%<span class="small"> busy</span></div></div><span class="pa">→</span>
+      <div class="ps"><div class="k">Latency per I/O</div><div class="v">${LAB.num(v.disk_latency)}<span class="small"> ms</span></div></div></div>`
+      + bar(`Device capacity ${cap.toLocaleString()} IOPS`, `${LAB.num(v.read_iops)} read + ${LAB.num(v.write_iops)} write`, [[v.read_iops / cap * 100, "#2f5bd3", "read"], [v.write_iops / cap * 100, "#c4561a", "write"]])
+      + bar("Swap I/O caused by paging", LAB.fmt("swap_iops", v.swap_iops), [[v.swap_iops / cap * 100, "#7a4fc9"]])
+      + `<p class="small muted">Queueing (M/M/1): queue = ρ²/(1−ρ), latency = service time/(1−ρ). Nothing changes much until the device is ~80% busy, then both explode. The I/O requests are simulated — this computer's disk is not used.</p>`;
+  }
+  function netViz(s) {
+    const v = s.values;
+    const flag = v.availability < 50 ? ["bad", "UNREACHABLE"] : v.availability < 95 || v.rtt > 300 ? ["warn", "DEGRADED"] : ["ok", "healthy"];
+    $("netFlag").innerHTML = `<span class="flag ${flag[0]}">${flag[1]}</span>`;
+    return `<div class="pipe"><div class="ps"><div class="k">Requests sent</div><div class="v">${LAB.num(v.req_eff)}<span class="small"> /s</span></div></div><span class="pa">→</span>
+      <div class="ps"><div class="k">RTT / loss</div><div class="v">${LAB.num(v.rtt)}<span class="small"> ms</span> · ${LAB.num(v.packet_loss)}%</div></div><span class="pa">→</span>
+      <div class="ps"><div class="k">Successful</div><div class="v">${LAB.num(v.throughput)}<span class="small"> /s</span></div></div><span class="pa">+</span>
+      <div class="ps"><div class="k">Failed / timed out</div><div class="v">${LAB.num(v.req_failed)} / ${LAB.num(v.timeouts)}</div></div></div>`
+      + bar("Service availability", `${LAB.num(v.availability)}%`, [[v.availability, "#157f4a"], [100 - v.availability, "#c03030"]])
+      + bar("Average latency (incl. retransmissions)", LAB.fmt("response_ms", v.response_ms), [[v.response_ms / s.controls.timeout_ms * 100, "#2f5bd3"]])
+      + `<p class="small muted">A lost packet is resent after a timeout (RTO ≥ 200 ms) that doubles each time; a request fails when the reply takes longer than the client timeout (${s.controls.timeout_ms} ms). Clients retry failures, adding load. Inside the server CPU is ${LAB.num(v.cpu_util)}% — the path is failing, not the host. Delay and loss are simulated (like tc netem); the host network is untouched.</p>`;
+  }
+
+  function render(s) {
+    $("hPill").innerHTML = LAB.pill(s.health, s.health);
+    LAB.syncControls(s, s.paused || !!s.runner);
+    if (tab === "proc") {
+      const c = {}; s.processes.forEach(p => (c[p.state] = (c[p.state] || 0) + 1));
+      $("stateCounts").innerHTML = ["NEW", "READY", "RUNNING", "WAITING", "BLOCKED", "SLEEPING", "RESTARTING", "TERMINATED"].map(k => `<span class="st ${k}">${k} ${c[k] || 0}</span>`).join("");
+      const sig = s.processes.map(p => p.pid + p.state + p.nice + p.holds.join("") + (p.waiting_for || "")).join("|");
+      if (!$("ptable").matches(":hover") || $("ptable").dataset.sig !== sig) { $("ptable").innerHTML = procTable(s); $("ptable").dataset.sig = sig; }
+    }
+    if (tab === "dead") {
+      const d = s.deadlock;
+      $("rag").innerHTML = rag(s);
+      $("dlVerdict").innerHTML = d.cycle.length ? `<span class="flag bad">${d.detected ? "DEADLOCK DETECTED" : "circular wait — confirming"}: ${d.cycle.map(n => n.split(" ").pop()).join(" → ")} → ${d.cycle[0].split(" ").pop()}</span>` : '<span class="flag ok">no circular wait</span>';
+      const C = [["mutual_exclusion", "Mutual exclusion"], ["hold_and_wait", "Hold and wait"], ["no_preemption", "No preemption"], ["circular_wait", "Circular wait"]];
+      $("coff").innerHTML = C.map(([k, t]) => `<li class="${d.coffman[k] ? "on" : ""}">${t}</li>`).join("");
+      const r = s.rules.deadlock;
+      $("dlDetect").innerHTML = `Detector: wait-for graph checked every sample; a cycle is <b>WARNING</b> at once, <b>CRITICAL</b> after it persists ${LAB.st.thresholds_live.deadlock.cycle_age.C} s, <b>FAILED</b> when ≥ ${LAB.st.thresholds_live.deadlock.lock_blocked.F} processes are blocked on locks. Now: ${LAB.pill(HEALTH_NAMES[r.confirmed], LEVEL_NAMES[r.confirmed])}${d.cycle.length ? ` (cycle age ${LAB.num(d.age)} s)` : ""}`;
+      const tsig = s.processes.filter(p => p.kind === "txn").map(p => p.pid + p.state + p.holds.join("") + (p.waiting_for || "")).join("|");
+      if (!$("txn").matches(":hover") || $("txn").dataset.sig !== tsig) { $("txn").innerHTML = txnCtl(s); $("txn").dataset.sig = tsig; }
+      $("setOrder").checked = s.settings.lock_ordering;
+      $("btnVictim").disabled = $("btnPreempt").disabled = !d.cycle.length;
+      $("dlTiles").innerHTML = ["lock_wait", "blocked_procs", "error_rate", "cpu_util"].map(k => LAB.tile(k, s)).join("");
+    }
+    if (tab === "mem") $("memViz").innerHTML = memViz(s);
+    if (tab === "disk") $("diskViz").innerHTML = diskViz(s);
+    if (tab === "net") $("netViz").innerHTML = netViz(s);
+  }
+  LAB.onState(render);
+  LAB.start();
+})();
+</script>
+{% endblock %}

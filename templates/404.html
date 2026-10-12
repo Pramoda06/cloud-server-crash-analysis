@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block title %}Not found{% endblock %}
+{% block content %}
+<div class="page narrow"><section class="card empty"><div class="big">Page not found</div>That page or experiment does not exist.<br><a class="btn btn-primary" href="/">Back to Overview</a></section></div>
+{% endblock %}
+{% block scripts %}<script>OS.startHealthPolling();</script>{% endblock %}

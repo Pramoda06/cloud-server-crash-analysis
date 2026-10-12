@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}OS Concepts{% endblock %}
+{% set T = thresholds %}
+{% set concepts = [
+  ("cpu-scheduling", "CPU Scheduling", "CPU",
+   "The scheduler decides which runnable process gets a core. Runnable processes without a core wait in the ready (run) queue. Linux CFS shares the CPU in proportion to weights derived from each process's nice value.",
+   "CPU demand ρ = (batch workload + request CPU time + paging overhead + created processes) ÷ vCPUs. Below 100% the run queue follows the M/M/c approximation Lq = ρ^√(2(c+1))/(1−ρ); above 100% the backlog grows every second. Lowering the web service's nice value reduces how long requests wait (CFS weight 1024·1.25^−nice)."),
+  ("queueing", "Queueing & Little's Law", "CPU · Disk · Service",
+   "When work arrives at a resource faster than it can be served, it waits. Waiting time grows non-linearly as utilization ρ approaches 1. Little's law, L = λ·W, links how many requests are in the system to their arrival rate and time in the system.",
+   "The run queue, the block-layer I/O queue (Lq = ρ²/(1−ρ)) and the request backlog are state variables that fill above capacity and drain below it. Requests in flight follow Little's law and hold memory — the bridge from a slow service to memory pressure."),
+  ("memory", "Memory Management", "Memory",
+   "The OS gives processes physical page frames. The working set is the memory a process actively uses; when the combined working set no longer fits in RAM, the kernel must evict pages that will soon be needed again.",
+   "Working set = OS & services + memory pressure + in-flight requests + created processes. Available memory = RAM − working set. Killing a memory-hungry process in the Process Lab frees its share immediately."),
+  ("virtual-memory", "Virtual Memory, Paging & Thrashing", "Memory",
+   "Virtual memory pages to swap. A page fault on a page that is not in RAM must be served from disk. Thrashing is when paging leaves too little CPU time for useful work — not merely 'many page faults'.",
+   "Above ~80% of RAM page faults climb steeply (35 + 9000·over^2.2 /s), paging overhead takes CPU time (70·over^1.8 %) and swap I/O hits the disk. The detector reports thrashing only when page faults AND paging overhead both exceed their critical thresholds."),
+  ("io", "I/O Management", "Disk",
+   "Read and write requests queue in the block layer and are served by the device. Latency = service time + queueing; near capacity, queueing dominates and processes sleep in I/O wait.",
+   "Disk demand = background reads + writes + request I/O + swap I/O. Latency = S/(1−ρ) with S = 2.4 ms (NVMe), 3 ms (SSD) or 8 ms (HDD); above capacity the backlog grows. On an HDD server, thrashing alone can saturate the disk."),
+  ("network", "Network Communication (TCP)", "Network",
+   "TCP resends lost packets after a retransmission timeout (RTO) that doubles on each retry. Clients give up when a reply takes longer than their timeout.",
+   "Latency and loss act on the simulated client path (like tc netem). The model enumerates retransmission counts of request and reply, adds the RTO delays and computes the share of requests that miss the client timeout. Failed requests are retried by clients."),
+  ("process", "Process Management", "Processes",
+   "Processes move through states — NEW, READY, RUNNING, WAITING, BLOCKED, TERMINATED — in the process table. A crashed child of a master dies with it; a supervisor restarts terminated services with new PIDs.",
+   "Create CPU-, memory- or I/O-bound processes and their load joins the server. Kill or crash the web-master and capacity drops to zero while CPU and memory look perfectly healthy. Restart: TERMINATED → RESTARTING → RUNNING."),
+  ("deadlocks", "Synchronization & Deadlock", "Locks",
+   "A deadlock needs all four Coffman conditions: mutual exclusion, hold and wait, no preemption and circular wait. It can be detected (wait-for graph cycle), recovered from (kill a victim / pre-empt) or prevented (e.g. a global lock order).",
+   "Transactions P1–P3 request Resources A–C. The detector searches the wait-for graph for a cycle every sample. Requests that need a deadlocked resource time out. The lock-ordering policy removes circular wait so the deadlock cannot form."),
+  ("cascade", "Cascading & Self-sustaining Failures", "Cross-subsystem",
+   "A failure in one subsystem can push another past its limits. Positive feedback (retries, piled-up requests) can keep a system failed even after the original trigger is gone — a metastable failure.",
+   "Cascade links: paging → disk & CPU, slow responses → in-flight memory, failures → client retries. Attribution separates the PRIMARY failure from SECONDARY ones using the recorded contributions; the engine flags self-sustaining failures."),
+  ("detection", "Failure Detection", "All subsystems",
+   "Monitoring compares observed metrics with thresholds, filters noise, and classifies the failure from evidence — independently of what caused it.",
+   "Every 0.5 s each rule is evaluated on observed values only; a level counts after 2 consecutive samples. Thresholds can be changed live in the System Lab (Advanced). Detection latency = detection time − the operator input that triggered it."),
+  ("recovery", "Recovery", "All subsystems",
+   "Recovery removes the cause (or adds capacity) and confirms the system is healthy again.",
+   "Lower the control, kill the hog, restart the service or break the deadlock. Queues drain at the rate of spare capacity, so recovery is gradual. Recovery completes when every rule reports OK for 3 consecutive samples; recovery time is measured from the first improvement."),
+] %}
+{% block content %}
+<div class="page narrow">
+  <div class="page-head">
+    <div>
+      <h1>OS Concepts</h1>
+      <div class="q">What OS concept explains this behaviour?</div>
+    </div>
+  </div>
+  <nav class="toc">{% for c in concepts %}<a href="#{{ c[0] }}">{{ c[1] }}</a>{% endfor %}</nav>
+
+  <div class="stack">
+  {% for c in concepts %}
+    <section class="card concept" id="{{ c[0] }}">
+      <h2><span class="i">{{ '%02d' % loop.index }}</span>{{ c[1] }}<span class="tag">{{ c[2] }}</span></h2>
+      <div class="rows">
+        <div class="rk">What it means</div><div class="rv">{{ c[3] }}</div>
+        <div class="rk">In our simulation</div><div class="rv">{{ c[4] }}</div>
+      </div>
+      {% if c[0] == "detection" %}
+      <div class="tbl-wrap" style="margin-top:16px"><table class="data compact">
+        <thead><tr><th>Check</th><th>Warning</th><th>Degraded</th><th>Critical</th><th>Failed</th></tr></thead><tbody>
+        {% for rule, checks in T.items() %}{% for k, th in checks.items() %}
+        <tr><td>{{ rule }} · {{ k }}</td>{% for l in ["W", "D", "C", "F"] %}<td class="num">{{ "> %g"|format(th[l]) if th[l] is not none else "—" }}</td>{% endfor %}</tr>
+        {% endfor %}{% endfor %}
+        </tbody></table></div>
+      <p class="small muted" style="margin:10px 0 0">Defaults from <span class="mono">simulator/lab/detect.py</span>; editable live in the System Lab (Advanced mode).</p>
+      {% endif %}
+    </section>
+  {% endfor %}
+    <section class="card">
+      <h2 style="font-size:18px">Key takeaway</h2>
+      <p style="margin-top:10px">Each failure leaves a different signature in a different OS subsystem — and some (a crashed process, a deadlock, a network fault) look perfectly healthy on CPU and memory. Reliable failure analysis needs resource metrics, process state, lock state and communication metrics together.</p>
+    </section>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}<script>OS.startHealthPolling();</script>{% endblock %}

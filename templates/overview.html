@@ -1,0 +1,299 @@
+{% extends "base.html" %}
+{% block title %}Overview{% endblock %}
+{% block content %}
+<div class="page wide">
+  <div class="page-head">
+    <div>
+      <h1>Overview</h1>
+      <div class="q">State of the simulated cloud servers in this laboratory. Select a server, then control it in the System Lab
+        and observe how CPU, memory, disk and network conditions lead to failure.</div>
+    </div>
+    <div class="head-actions">
+      <a class="btn btn-primary btn-sm" href="/lab">Open System Lab →</a>
+    </div>
+  </div>
+
+  <!-- summary metrics of the selected server -->
+  <div class="metric-grid" id="ovMetrics"></div>
+
+  <!-- selected server (2/3) + how to use the lab (1/3) -->
+  <div class="split stretch section">
+    <section class="card">
+      <div class="card-head"><h2>{{ server.id }} <span class="muted" style="font-weight:500">· {{ server.name }}</span></h2>
+        <span class="aside" id="ovStatus"></span></div>
+      <dl class="kv tight">
+        <dt>Server type</dt><dd>{{ server.server_type }} · {{ server.role }} role</dd>
+        <dt>Operating system</dt><dd>{{ server.os }} · kernel {{ server.kernel }}</dd>
+        <dt>Platform</dt><dd>{{ server.vcpus }} vCPU · {{ (server.ram_mb / 1024)|int }} GB RAM · {{ server.disk }}</dd>
+        <dt>Filesystem / network</dt><dd>{{ server.filesystem }} · {{ server.network_type }}</dd>
+        <dt>Region</dt><dd>{{ server.region }}</dd>
+        <dt>Current activity</dt><dd id="ovExp">Normal operation</dd>
+        <dt>Last run</dt><dd id="ovLast">No runs yet</dd>
+        <dt>Primary finding</dt><dd id="ovFinding">—</dd>
+      </dl>
+    </section>
+    <section class="card">
+      <div class="card-head"><h2>How to use the lab</h2></div>
+      <ol class="steps">
+        <li>Open the <b>System Lab</b> — the server starts healthy.</li>
+        <li>Raise <b>CPU workload</b> and watch <b>System Health</b> change.</li>
+        <li>Use <b>Inject Sudden Stress</b> for a one-step spike.</li>
+        <li>See the root cause in <b>Failure Analysis</b>.</li>
+        <li>Click <b>Recovery</b> to restore the baseline.</li>
+      </ol>
+      <p class="small muted" style="margin:16px 0 0">All values are simulated — nothing on this computer is stressed.</p>
+    </section>
+  </div>
+
+  <!-- server table -->
+  <section class="card flush section">
+    <div class="card-head"><h2>Servers</h2>
+      <span class="aside"><span class="refresh-note" id="srvNote"></span></span>
+      <button type="button" class="btn btn-primary btn-sm" id="btnAddServer">+ Add Server</button>
+      <p class="cd">Live simulated utilisation of every configured server. Selecting a server makes every page work on it.</p></div>
+    <div id="serverList"></div>
+  </section>
+</div>
+
+<!-- Add Server: every technical value is a predefined option -->
+<div class="modal-back" id="addModal" hidden>
+  <form class="modal" id="addForm" role="dialog" aria-modal="true" aria-labelledby="addTitle" novalidate>
+    <h2 id="addTitle">Add Server</h2>
+    <div class="q">Choose the configuration from the predefined options. The server's health is decided by the monitor, not set here.</div>
+    <div class="form-grid">
+      <div class="field full" data-f="name"><label class="fl" for="fName">Server name</label>
+        <input class="text" id="fName" name="name" maxlength="60" placeholder="e.g. Production Web Server" autocomplete="off"><div class="ferr"></div></div>
+      <div class="field" data-f="server_type"><label class="fl" for="fType">Server type</label><select id="fType" name="server_type"></select><div class="ferr"></div></div>
+      <div class="field" data-f="role"><label class="fl" for="fRole">Server role</label><select id="fRole" name="role"></select><div class="ferr"></div></div>
+      <div class="field" data-f="os"><label class="fl" for="fOs">Operating system</label><select id="fOs" name="os"></select><div class="ferr"></div></div>
+      <div class="field" data-f="os_version"><label class="fl" for="fVer">Version</label><select id="fVer" name="os_version" disabled></select><div class="ferr"></div></div>
+      <div class="field" data-f="cpu"><label class="fl" for="fCpu">CPU</label><select id="fCpu" name="cpu"></select><div class="ferr"></div></div>
+      <div class="field" data-f="ram_gb"><label class="fl" for="fRam">RAM</label><select id="fRam" name="ram_gb"></select><div class="ferr"></div></div>
+      <div class="field" data-f="storage_gb"><label class="fl" for="fSto">Storage</label><select id="fSto" name="storage_gb"></select><div class="ferr"></div></div>
+      <div class="field" data-f="storage_type"><span class="fl">Storage type</span><div class="segmented" id="fStoType"></div><div class="ferr"></div></div>
+      <div class="field" data-f="filesystem"><label class="fl" for="fFs">Filesystem</label><select id="fFs" name="filesystem" disabled></select><div class="ferr"></div></div>
+      <div class="field" data-f="network_type"><label class="fl" for="fNet">Network type</label><select id="fNet" name="network_type"></select><div class="ferr"></div></div>
+      <div class="field full" data-f="connection"><span class="fl">Connection status</span><div class="segmented" id="fConn"></div><div class="ferr"></div></div>
+    </div>
+    <div class="form-msg" id="addMsg"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+      <button type="submit" class="btn btn-primary" id="btnSaveServer">Save Server</button>
+    </div>
+  </form>
+</div>
+
+<!-- Remove Server confirmation -->
+<div class="modal-back" id="removeModal" hidden>
+  <div class="modal sm" role="alertdialog" aria-modal="true" aria-labelledby="rmTitle">
+    <h2 id="rmTitle">Remove Server?</h2>
+    <p style="margin:12px 0 6px">Are you sure you want to remove this server? Its associated crash-analysis data will also be removed.</p>
+    <p class="small muted" id="rmWhat"></p>
+    <div class="form-msg" id="rmMsg"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+      <button type="button" class="btn btn-danger" id="btnRemoveYes">Remove Server</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(async function () {
+  const $ = OS.$;
+  /* ------------------------------------------------------- server list
+     The rows are rendered immediately from the data the page was served with,
+     then refreshed from /api/servers every 3 s. "Loading" is shown only while a
+     request is really outstanding and no data exists yet. */
+  let servers = {{ server_rows|tojson }}, selected = {{ server.db_id|tojson }}, loadState = "ok";
+  const pct = v => (v == null ? "—" : Number(v).toFixed(1) + "%");
+  const lvlPct = v => (v == null ? 0 : v > 95 ? 3 : v > 85 ? 2 : v > 75 ? 1 : 0);
+  const uptime = s => {
+    if (s == null) return "—";
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
+    return h ? `${h}h ${String(m).padStart(2, "0")}m` : m ? `${m}m ${String(x).padStart(2, "0")}s` : `${x}s`;
+  };
+  const meterCell = v => `<div class="mcell"><div class="meter ${v == null ? "na" : "l" + lvlPct(v)}"><i style="width:${Math.min(100, v || 0)}%"></i></div><b>${pct(v)}</b></div>`;
+  function renderServers() {
+    const box = $("serverList");
+    if (!servers.length) {
+      box.innerHTML = loadState === "loading"
+        ? '<div class="state-box"><span class="spinner"></span>Loading servers…</div>'
+        : loadState === "error"
+        ? '<div class="state-box err"><div class="st-t">Could not load servers</div>The simulator did not respond.<br><button type="button" class="btn btn-ghost btn-sm" id="btnRetry">Retry</button></div>'
+        : '<div class="state-box"><div class="st-t">No servers configured</div>Add a server to start analysing it.<br><button type="button" class="btn btn-primary btn-sm" data-add>+ Add Server</button></div>';
+      return;
+    }
+    const one = servers.length <= 1;
+    box.innerHTML = `<div class="tbl-wrap"><table class="data roomy servers"><thead><tr>
+      <th>Server</th><th>Status</th><th>CPU</th><th>Memory</th><th>Disk</th><th>Uptime</th><th>Last run</th><th class="r">Actions</th></tr></thead><tbody>
+      ${servers.map(s => {
+        const la = s.last_run, cur = s.db_id === selected;
+        const last = la ? `<a href="/runs/${la.id}" data-sel="${s.db_id}">#${la.id} · ${OS.esc(la.name)}</a><span class="sub">${s.runs} run${s.runs === 1 ? "" : "s"} · worst ${OS.esc(la.peak_health)}</span>`
+                        : '<span class="muted nw">No runs yet</span>';
+        const st = OS.pill(s.status, s.status) + (s.experiment ? `<span class="sub">${OS.esc(s.experiment)} running</span>` : "");
+        return `<tr class="${cur ? "sel" : ""}">
+          <td><span class="nw"><b>${OS.esc(s.id)}</b>${cur ? '<span class="tag-cur">selected</span>' : ""}</span><span class="sub">${OS.esc(s.server_type)}</span></td>
+          <td>${st}</td><td>${meterCell(s.cpu_util)}</td><td>${meterCell(s.mem_util)}</td><td>${meterCell(s.disk_util)}</td>
+          <td class="mono">${uptime(s.uptime_s)}</td><td>${last}</td>
+          <td class="actions r"><button type="button" class="btn btn-primary btn-sm" data-act="analyze" data-id="${s.db_id}" ${s.connection === "Offline" ? 'disabled title="Offline servers cannot be analysed"' : ""}>Open lab</button>${cur ? "" : `<button type="button" class="btn btn-ghost btn-sm" data-act="view" data-id="${s.db_id}">Select</button>`}<button type="button" class="btn btn-ghost btn-sm bad" data-act="remove" data-id="${s.db_id}" ${one ? 'disabled title="At least one server is needed"' : ""}>Remove</button></td></tr>`;
+      }).join("")}</tbody></table></div>`;
+  }
+  async function loadServers() {
+    if (!servers.length) { loadState = "loading"; renderServers(); }
+    try {
+      const d = await OS.api("/api/servers");
+      servers = d.servers; selected = d.selected; loadState = "ok"; $("srvNote").textContent = "";
+    } catch (e) {
+      loadState = "error";
+      $("srvNote").textContent = servers.length ? "Connection lost — showing the last known values" : "";
+    }
+    renderServers(); renderFleet();
+  }
+  $("serverList").addEventListener("click", e => {
+    if (e.target.closest("#btnRetry")) { loadServers(); return; }
+    if (e.target.closest("[data-add]")) { openAdd(); return; }
+    const a = e.target.closest("a[data-sel]");
+    if (a && Number(a.dataset.sel) !== selected) { e.preventDefault(); OS.selectServer(a.dataset.sel, a.getAttribute("href")); return; }
+    const b = e.target.closest("button[data-act]"); if (!b) return;
+    const id = Number(b.dataset.id), s = servers.find(x => x.db_id === id);
+    if (b.dataset.act === "analyze") OS.selectServer(id, "/lab");
+    else if (b.dataset.act === "view") OS.selectServer(id, "/");
+    else if (b.dataset.act === "remove") openRemove(s);
+  });
+
+  /* ------------------------------------------------- summary metric cards */
+  const cur = () => servers.find(s => s.db_id === selected) || servers[0] || {};
+  let live = null;            // latest /api/lab/state values of the selected server
+  function metric(label, v, lvl, sub, unit) {
+    return `<div class="metric l${lvl}"><div class="mk">${label}<span class="tag">simulated</span></div>
+      <div class="mv">${v}${unit ? `<span class="u">${unit}</span>` : ""}</div>
+      ${sub}</div>`;
+  }
+  function renderFleet() {
+    const s = cur();
+    const v = live || { cpu_util: s.cpu_util, mem_util: s.mem_util, disk_util: s.disk_util };
+    const bar = (x, l) => `<div class="meter l${l}"><i style="width:${Math.min(100, x || 0)}%"></i></div>`;
+    const lv = k => (live && window.LAB && LAB.meta ? Math.min(3, LAB.levelOf(k, v[k])) : lvlPct(v[k]));
+    const online = servers.filter(x => x.status !== "OFFLINE").length;
+    const issues = servers.filter(x => !["HEALTHY", "OFFLINE"].includes(x.status)).length;
+    const n = x => (x == null ? "—" : Number(x).toFixed(1));
+    $("ovMetrics").innerHTML =
+      metric("CPU usage", n(v.cpu_util), lv("cpu_util"), bar(v.cpu_util, lv("cpu_util")), "%") +
+      metric("Memory usage", n(v.mem_util), lv("mem_util"), bar(v.mem_util, lv("mem_util")), "%") +
+      metric("Disk usage", n(v.disk_util), lv("disk_util"), bar(v.disk_util, lv("disk_util")), "%") +
+      `<div class="metric ${issues ? "l1" : ""}"><div class="mk">Servers online</div><div class="mv">${online}<span class="u">/ ${servers.length}</span></div>
+        <div class="ms">${issues ? `${issues} server${issues > 1 ? "s" : ""} need attention` : "All online servers healthy"}</div></div>`;
+  }
+  renderServers(); renderFleet();
+  setInterval(loadServers, 3000);
+
+  /* ------------------------------------------- live state of the selected server */
+  try { await LAB.loadMeta(); } catch (e) { return; }
+  LAB.onState(st => {
+    live = st.values;
+    $("ovStatus").innerHTML = LAB.pill(st.health, st.health);
+    const p = st.status.primary[0];
+    $("ovExp").innerHTML = st.runner ? `Experiment running: <b>${OS.esc(st.runner.name)}</b> — <a href="/monitor">watch live →</a>` : st.recording ? "Recording" : p ? `<b>${OS.esc(p.name)}</b> — <a href="/analysis">why? →</a>` : "Normal operation";
+    renderFleet();
+  });
+  LAB.start({ interval: 1500, full: false });
+  OS.api("/api/lab/runs").then(rows => {
+    if (!rows.length) return;
+    const r = rows[0];
+    $("ovLast").innerHTML = `<a href="/runs/${r.id}">#${r.id} · ${OS.esc(r.name)}</a> · ${OS.esc(r.created)} · worst ${LAB.pill(r.peak_health, r.peak_health)}`;
+    $("ovFinding").textContent = r.primary_failure || "No failure";
+  }).catch(() => {});
+
+  /* ------------------------------------------------------------ modals */
+  function openModal(id) { $(id).hidden = false; }
+  function closeModal(id) { $(id).hidden = true; }
+  document.querySelectorAll(".modal-back").forEach(m => {
+    m.addEventListener("click", e => { if (e.target === m || e.target.closest("[data-close]")) closeModal(m.id); });
+  });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") document.querySelectorAll(".modal-back").forEach(m => (m.hidden = true)); });
+
+  // ---- Remove Server
+  let rmId = null;
+  function openRemove(s) {
+    rmId = s.db_id;
+    $("rmWhat").textContent = `${s.id} · ${s.name} — ${s.runs} recorded run${s.runs === 1 ? "" : "s"} will be deleted.`;
+    $("rmMsg").textContent = ""; $("btnRemoveYes").disabled = false;
+    openModal("removeModal");
+  }
+  $("btnRemoveYes").addEventListener("click", async () => {
+    $("btnRemoveYes").disabled = true;
+    try {
+      await OS.api("/api/servers/" + rmId, { method: "DELETE" });
+      closeModal("removeModal");
+      if (rmId === selected) location.reload(); else loadServers();
+    } catch (e) { $("rmMsg").textContent = e.message; $("btnRemoveYes").disabled = false; }
+  });
+
+  // ---- Add Server (predefined, dependent options)
+  const O = LAB.meta.server_options, F = $("addForm");
+  const opt = (v, l) => `<option value="${OS.esc(v)}">${OS.esc(l == null ? v : l)}</option>`;
+  const ph = t => `<option value="" disabled selected>${t}</option>`;
+  const seg = (el, values, def) => {
+    el.innerHTML = values.map(v => `<button type="button" data-v="${OS.esc(v)}" class="${v === def ? "sel" : ""}">${OS.esc(v)}</button>`).join("");
+    el.dataset.v = def;
+    el.addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; el.dataset.v = b.dataset.v; el.querySelectorAll("button").forEach(x => x.classList.toggle("sel", x === b)); fieldErr(el.closest(".field").dataset.f, ""); });
+  };
+  function fillForm() {
+    F.reset();
+    $("fType").innerHTML = ph("Select a server type") + O.server_types.map(t => opt(t)).join("");
+    $("fRole").innerHTML = ph("Select a role") + O.roles.map(t => opt(t)).join("");
+    $("fOs").innerHTML = ph("Select an operating system") + O.operating_systems.map(o => opt(o.name)).join("");
+    $("fVer").innerHTML = ph("Select an OS first"); $("fVer").disabled = true;
+    $("fFs").innerHTML = ph("Select an OS first"); $("fFs").disabled = true;
+    $("fCpu").innerHTML = ph("Select CPU") + O.cpu.map(c => opt(c.value, c.label)).join("");
+    $("fRam").innerHTML = ph("Select RAM") + O.ram.map(c => opt(c.value, c.label)).join("");
+    $("fSto").innerHTML = ph("Select storage") + O.storage.map(c => opt(c.value, c.label)).join("");
+    $("fNet").innerHTML = O.network_types.map(t => opt(t)).join("");
+    seg($("fStoType"), O.storage_types, "SSD");
+    seg($("fConn"), O.connections, "Online");
+    F.querySelectorAll(".field").forEach(f => fieldErr(f.dataset.f, ""));
+    $("addMsg").textContent = "";
+  }
+  function fieldErr(name, msg) {
+    const f = F.querySelector(`.field[data-f="${name}"]`); if (!f) return;
+    f.classList.toggle("err", !!msg); f.querySelector(".ferr").textContent = msg || "";
+  }
+  $("fType").addEventListener("change", () => { const r = O.type_role[$("fType").value]; if (r) $("fRole").value = r; fieldErr("server_type", ""); fieldErr("role", ""); });
+  $("fOs").addEventListener("change", () => {          // dependent options: versions + filesystems of this OS
+    const o = O.operating_systems.find(x => x.name === $("fOs").value);
+    $("fVer").innerHTML = ph("Select a version") + o.versions.map(v => opt(v)).join(""); $("fVer").disabled = false;
+    $("fFs").innerHTML = O.filesystems[o.family].map(v => opt(v)).join(""); $("fFs").value = o.default_fs; $("fFs").disabled = false;
+    fieldErr("os", ""); fieldErr("os_version", ""); fieldErr("filesystem", "");
+  });
+  F.querySelectorAll("select, input").forEach(el => el.addEventListener("input", () => fieldErr(el.closest(".field").dataset.f, "")));
+  const REQUIRED = { name: ["fName", "Please enter a server name."], server_type: ["fType", "Please choose a server type."],
+    role: ["fRole", "Please choose a server role."], os: ["fOs", "Please choose an operating system."],
+    os_version: ["fVer", "Please choose a version."], cpu: ["fCpu", "Please choose the number of vCPUs."],
+    ram_gb: ["fRam", "Please choose the amount of RAM."], storage_gb: ["fSto", "Please choose a storage size."] };
+  F.addEventListener("submit", async e => {
+    e.preventDefault();
+    const body = { name: $("fName").value.trim(), server_type: $("fType").value, role: $("fRole").value, os: $("fOs").value,
+      os_version: $("fVer").value, cpu: $("fCpu").value, ram_gb: $("fRam").value, storage_gb: $("fSto").value,
+      storage_type: $("fStoType").dataset.v, filesystem: $("fFs").value, network_type: $("fNet").value, connection: $("fConn").dataset.v };
+    let bad = 0;
+    Object.entries(REQUIRED).forEach(([k, [, msg]]) => { const miss = !body[k]; fieldErr(k, miss ? msg : ""); bad += miss; });
+    if (bad) { $("addMsg").textContent = "Please complete the highlighted fields."; return; }
+    $("btnSaveServer").disabled = true;
+    try {
+      const r = await OS.api("/api/servers", { method: "POST", body: JSON.stringify(body) });
+      closeModal("addModal");
+      OS.selectServer(r.server.db_id, "/");            // new server becomes the selected one
+    } catch (err) {
+      const errs = (err.body && err.body.errors) || {};
+      Object.entries(errs).forEach(([k, m]) => fieldErr(k, m));
+      $("addMsg").textContent = err.message;
+    }
+    $("btnSaveServer").disabled = false;
+  });
+  function openAdd() { fillForm(); openModal("addModal"); setTimeout(() => $("fName").focus(), 30); }
+  $("btnAddServer").addEventListener("click", openAdd);
+  if (new URLSearchParams(location.search).get("add")) { history.replaceState(null, "", "/"); openAdd(); }
+})();
+</script>
+{% endblock %}

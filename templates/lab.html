@@ -1,0 +1,333 @@
+{% extends "base.html" %}
+{% block title %}System Lab{% endblock %}
+{% block content %}
+<div class="page wide">
+  <div class="page-head">
+    <div>
+      <h1>System Lab</h1>
+      <div class="q">Control the simulated server and watch how each change affects system health. Changes apply on the next 0.5 s sample.</div>
+    </div>
+    <div class="head-actions">
+      <details class="menu" id="recMenu"><summary class="btn btn-ghost btn-sm" id="btnRec">● Record</summary>
+        <div class="menu-pop">
+          <button type="button" class="btn btn-ghost btn-sm" data-rec="reset">Recover first, then record <span class="muted small">(exactly reproducible)</span></button>
+          <button type="button" class="btn btn-ghost btn-sm" data-rec="now">Record from the current state</button>
+          <button type="button" class="btn btn-ghost btn-sm" id="btnSnap" title="Save the current controls, metrics and health for comparison in Experiment History">Save snapshot</button>
+        </div></details>
+      <button type="button" class="btn btn-ghost btn-sm" id="btnPause">Pause</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="btnRecovery" title="System recovery: stop running stress, restart failed processes, release locks and return every control to the healthy baseline">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 8v4l2.5 2.5"/></svg>Recovery</button>
+    </div>
+  </div>
+
+  <div class="banner run" id="runBanner" hidden><span id="runText"></span><span class="progress" id="runProg" hidden><i></i></span>
+    <span class="r" style="display:flex;gap:8px"><button type="button" class="btn btn-ghost btn-sm" id="btnStopRun">Stop</button></span></div>
+
+  <div class="lab-grid">
+    <!-- CONTROL PANEL (one panel; Advanced adds parameters, it never repeats them) -->
+    <div class="lab-left">
+      <section class="card">
+        <div class="card-head"><h2>Control panel</h2>
+          <div class="mode-toggle" role="group" aria-label="Control mode" style="margin-left:auto"><button type="button" data-mode="basic">Basic</button><button type="button" data-mode="advanced">Advanced</button></div></div>
+        <p class="mode-cap" id="modeCap"></p>
+        <div id="controls"></div>
+        <div id="advExtra" class="adv-block" hidden>
+          <button type="button" class="btn btn-ghost btn-sm" id="btnDefaults">Restore default control values</button>
+        </div>
+        <p class="small muted" id="ctlAside" style="margin:16px 0 0"></p>
+      </section>
+    </div>
+
+    <div class="lab-right">
+      <!-- SYSTEM HEALTH: live graph of the simulated system + current status -->
+      <section class="card">
+        <div class="card-head"><h2>System Health</h2>
+          <div class="seg" role="group" aria-label="Graph" id="gSel" style="margin-left:auto"></div>
+          <p class="cd">Live graph of the simulated server (last 2 minutes, one sample every 0.5 s). Move a control or inject stress and watch it respond.</p></div>
+        <div class="health-top">
+          <div id="hStatus"></div>
+          <div class="ht-msg" id="hMsg"></div>
+          <a class="btn btn-ghost btn-sm" href="/analysis" id="whyLink" hidden>Why did it fail? →</a>
+        </div>
+        <div class="chart-box lab-chart"><canvas id="hChart" aria-label="Live system graph"></canvas></div>
+        <div class="chart-key"><span><i class="band"></i>warning / failure period</span><span><i class="ln stress"></i>stress injected</span><span><i class="ln rec"></i>recovery</span><span><i class="ln cc"></i>control changed</span></div>
+        <div class="status-strip" id="hStrip"></div>
+      </section>
+
+      <!-- INJECT SUDDEN STRESS: one action -->
+      <section class="card">
+        <div class="card-head"><h2>Inject Sudden Stress</h2>
+          <p class="cd">Applies a one-step jump to the relevant controls of the simulated server. The intensity sets how far past normal the resource is pushed. Remove it at any time.</p></div>
+        <div class="stress-line">
+          <label class="bfield">Stress type<select id="stressKind"></select></label>
+          <div class="bfield stress-int"><label for="stressInt">Stress intensity: <b id="stressIntV">75%</b></label>
+            <div class="lctl"><input type="range" id="stressInt" min="5" max="100" step="5" value="75"></div>
+            <div class="si-scale"><span>Low</span><span>High</span></div></div>
+          <button type="button" class="btn btn-danger" id="btnStress">Inject Sudden Stress</button>
+        </div>
+        <div class="stress-status"><span>Stress status:</span><span id="stressNow"></span>
+          <button type="button" class="link-btn" id="btnStressClear" hidden>Remove stress</button></div>
+      </section>
+    </div>
+  </div>
+
+  <!-- LIVE CONSEQUENCES: cause → effect → consequence, each with its own live sparkline -->
+  <section class="card section">
+    <div class="card-head"><h2>Live consequences</h2><span class="aside">click any value to see why it changed</span>
+      <p class="cd">Each row follows one system condition through the operating system to what clients experience. The small graphs show the last minute.</p></div>
+    <div class="cons-wrap">
+      <div class="cflow" id="cflow"></div>
+      <aside class="inspector" id="inspector" hidden></aside>
+    </div>
+    <details class="dep-graph" id="depGraph" hidden>
+      <summary>Full dependency graph <span class="muted small">— every value of the simulation and what it depends on (Advanced)</span></summary>
+      <div class="tabs" id="gTabs" style="margin-top:12px"></div>
+      <div class="graph-box" id="graph"></div>
+    </details>
+  </section>
+
+  <section class="card flush section">
+    <div class="card-head"><h2>Recent events</h2><a class="aside" href="/monitor">full timeline &amp; graphs →</a></div>
+    <div id="events"></div>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(async function () {
+  await LAB.loadMeta();
+  const $ = OS.$, M = LAB.meta;
+  let mode = "basic";
+  try { mode = localStorage.getItem("labMode") || "basic"; } catch (e) {}
+
+  /* ---------------- controls: one panel.
+     Basic    = six core controls.
+     Advanced = the same core controls (disk split into read / write) + only the
+                parameters Basic does not have, plus settings and thresholds. */
+  const GROUPS = [["cpu", "CPU"], ["memory", "Memory"], ["disk", "Disk"], ["network", "Network & traffic"]];
+  const CORE = ["cpu_workload", "mem_demand", "disk_io", "req_rate", "net_delay", "net_loss"];
+  const CAP = {
+    basic: "Six core controls — enough for every experiment in the lab.",
+    advanced: "Core controls plus process counts, scheduling priority, separate read / write load, connection failures, client timeout and detection thresholds.",
+  };
+  function section(name, list, cls) {
+    const sec = document.createElement("div"); sec.className = "cgroup " + (cls || "");
+    sec.innerHTML = `<div class="cgroup-h">${name}</div>`;
+    list.forEach(c => sec.appendChild(LAB.controlEl(c, { help: mode === "basic" })));
+    return sec;
+  }
+  function buildControls() {
+    LAB.controls = {};
+    const box = $("controls"); box.innerHTML = "";
+    const core = mode === "basic"
+      ? CORE.map(k => (k === "disk_io" ? LAB.BASIC_DISK : LAB.spec[k]))
+      : CORE.flatMap(k => (k === "disk_io" ? [LAB.spec.disk_read, LAB.spec.disk_write] : [LAB.spec[k]]));
+    const inGroup = (c, g) => c.group === g || (c.key === "disk_io" && g === "disk");
+    GROUPS.forEach(([g, name]) => { const l = core.filter(c => inGroup(c, g)); if (l.length) box.appendChild(section(name, l)); });
+    if (mode === "advanced") {
+      const shown = new Set(core.map(c => c.key));
+      const extra = M.controls.filter(c => !shown.has(c.key));
+      const adv = document.createElement("div"); adv.className = "adv-block";
+      adv.innerHTML = '<div class="cgroup-h">Advanced parameters</div>';
+      GROUPS.forEach(([g, name]) => { const l = extra.filter(c => c.group === g); if (l.length) adv.appendChild(section(name, l, "inner")); });
+      box.appendChild(adv);
+    }
+    $("advExtra").hidden = mode !== "advanced";
+    $("modeCap").textContent = CAP[mode];
+    document.querySelectorAll(".mode-toggle button").forEach(b => b.classList.toggle("sel", b.dataset.mode === mode));
+    if (LAB.st) LAB.syncControls(LAB.st, LAB.st.paused || !!LAB.st.runner);
+  }
+  document.querySelectorAll(".mode-toggle button").forEach(b => b.addEventListener("click", () => {
+    mode = b.dataset.mode; try { localStorage.setItem("labMode", mode); } catch (e) {}
+    buildControls();
+  }));
+  buildControls();
+
+  $("btnDefaults").addEventListener("click", () => {
+    const b = {}; M.controls.forEach(c => (b[c.key] = c.default)); LAB.post("/api/lab/controls", b); LAB.toast("Default control values restored");
+  });
+
+
+  /* ---------------- header actions */
+  $("btnRecovery").addEventListener("click", () => LAB.post("/api/lab/reset").then(r => LAB.toast(r.result === "Recovery started" ? "Recovery started — the graph shows the server returning to normal" : r.result)));
+  $("btnPause").addEventListener("click", () => LAB.post("/api/lab/pause", { paused: !LAB.st.paused }));
+  $("btnSnap").addEventListener("click", async () => {
+    $("recMenu").open = false;
+    const name = `${new Date().toLocaleTimeString("en-GB")} · ${LAB.st.health}`;
+    await LAB.post("/api/lab/snapshots", { name }); LAB.toast(`Snapshot saved (${name}) — compare snapshots in Experiment History`);
+  });
+  document.querySelectorAll("[data-rec]").forEach(b => b.addEventListener("click", async () => {
+    $("recMenu").open = false;
+    await LAB.post("/api/lab/record", { reset: b.dataset.rec === "reset" }); LAB.toast("Recording — every control change, metric and event is stored");
+  }));
+  $("btnRec").addEventListener("click", e => {
+    if (LAB.st && LAB.st.recording && !LAB.st.runner) { e.preventDefault(); LAB.post("/api/lab/record", { stop: true }).then(r => LAB.toast(`Recording saved as run #${r.result}`)); }
+  });
+  $("btnStopRun").addEventListener("click", () => {
+    if (LAB.st.runner) LAB.post("/api/lab/run", { stop: true }); else LAB.post("/api/lab/record", { stop: true });
+  });
+
+  /* ---------------- sudden stress (one action) */
+  $("stressKind").innerHTML = Object.entries(M.stress_kinds).map(([k, v]) => `<option value="${k}">${OS.esc(v)}</option>`).join("");
+  /* intensity = share of the way from normal to well beyond the limit (programs.stress_targets) */
+  const paintInt = () => { const r = $("stressInt"); r.style.setProperty("--fill", ((r.value - r.min) / (r.max - r.min) * 100) + "%"); $("stressIntV").textContent = r.value + "%"; };
+  $("stressInt").addEventListener("input", paintInt); paintInt();
+  $("btnStress").addEventListener("click", () => LAB.post("/api/lab/stress", { kind: $("stressKind").value, intensity: Number($("stressInt").value), hold_s: 0 }).then(r => LAB.toast(r.result)));
+  $("btnStressClear").addEventListener("click", () => LAB.post("/api/lab/stress", { clear: true }).then(r => LAB.toast(r.result)));
+
+  /* ---------------- system health */
+  const STATUS = ["Normal", "Warning", "Degraded", "Critical", "Critical"];
+  const badge = l => `<span class="badge l${l}">${STATUS[l]}</span>`;
+  const lv = (s, k) => LAB.levelOf(k, s.values[k]);
+  const f = (s, k) => LAB.fmt(k, s.values[k]);
+  /* status strip under the graph: the current values of the graphed metrics */
+  function strip(s) {
+    const V = s.values;
+    const procL = V.blocked_procs > 0 || V.terminated_procs > 0 ? Math.max(1, lv(s, "run_queue")) : lv(s, "run_queue");
+    const diskL = Math.max(lv(s, "io_queue"), lv(s, "disk_latency"));
+    const cell = (name, val, sub, l, pct, dot) => `<div class="ss-cell">
+      <div class="ss-k">${dot ? `<i class="sw" style="background:${dot}"></i>` : ""}${name}</div>
+      <div class="ss-v">${val}</div>
+      ${pct == null ? `<div class="ss-sub">${sub}</div>` : `<div class="meter l${l}"><i style="width:${Math.min(100, pct || 0)}%"></i></div>`}
+      ${badge(l)}</div>`;
+    return cell("CPU", LAB.fmt("cpu_util", V.cpu_util), "", lv(s, "cpu_util"), V.cpu_util, LAB.COLORS[0]) +
+      cell("Memory", LAB.fmt("mem_util", V.mem_util), "", lv(s, "mem_util"), V.mem_util, LAB.COLORS[1]) +
+      cell("Disk", LAB.fmt("disk_util", V.disk_util), "", diskL, V.disk_util, LAB.COLORS[2]) +
+      cell("Processes", `${V.running_procs} <span class="u">running</span>`, `run queue ${f(s, "run_queue")} · ${V.blocked_procs} blocked`, procL) +
+      cell("Response time", f(s, "response_ms"), `errors ${f(s, "error_rate")}`, Math.max(lv(s, "response_ms"), lv(s, "error_rate")));
+  }
+
+  /* ---------------- live graph (existing shared-axis chart code, fed by the simulation samples) */
+  LAB.CHART_DEF.load = { t: "Resource usage", series: ["cpu_util", "mem_util", "disk_util"], names: ["CPU", "Memory", "Disk"], max: 100 };
+  LAB.CHART_DEF.procs = { t: "Process activity", series: ["run_queue", "blocked_procs"], names: ["Run queue (processes waiting for a CPU)", "Blocked processes"] };
+  const VIEWS = [["load", "Resource usage"], ["procs", "Process activity"], ["response_ms", "Response time"]];
+  let gView = "load";
+  try { gView = localStorage.getItem("labGraph") || "load"; } catch (e) {}
+  if (!VIEWS.some(v => v[0] === gView)) gView = "load";
+  let hc = null;
+  function buildChart() {
+    if (hc) hc.chart.destroy();
+    hc = LAB.makeChart($("hChart"), gView, []);
+    $("gSel").innerHTML = VIEWS.map(([k, n]) => `<button type="button" data-g="${k}" class="${k === gView ? "sel" : ""}">${n}</button>`).join("");
+    drawChart();
+  }
+  $("gSel").addEventListener("click", e => {
+    const b = e.target.closest("button[data-g]"); if (!b) return;
+    gView = b.dataset.g; try { localStorage.setItem("labGraph", gView); } catch (x) {} buildChart();
+  });
+  const MARKS = ["STRESS", "RECOVERY", "ACTION", "CONTROL"];
+  function drawChart() {
+    if (!hc || !LAB.st) return;
+    const last = LAB.samples[LAB.samples.length - 1];
+    const xmax = LAB.st.paused && last ? last.ts + 0.5 : LAB.st.now, xmin = xmax - 120;
+    LAB.fillCharts([hc], LAB.samples.filter(x => x.ts >= xmin - 1), xmin, xmax, LAB.events.filter(e => e.ts >= xmin && MARKS.includes(e.kind)));
+  }
+  buildChart();
+
+  /* ---------------- live consequences: cause → effect → consequence */
+  const CHAINS = [
+    ["CPU", ["cpu_util", "run_queue", "cpu_wait"], "Busy CPU → processes queue for a core → they wait longer"],
+    ["Memory", ["mem_util", "page_faults", "paging_overhead"], "Memory fills → page faults → CPU time lost to paging"],
+    ["Disk", ["disk_util", "io_queue", "disk_latency"], "Busy disk → I/O requests queue → slower reads and writes"],
+    ["Network", ["packet_loss", "retrans_ms", "timeouts"], "Lost packets → retransmissions → client timeouts"],
+    ["Service", ["accept_backlog", "response_ms", "error_rate"], "Request backlog → slower responses → failed requests"],
+  ];
+  let sel = null;
+  const inspOpts = () => ({ advanced: mode === "advanced", onNode: id => select(id) });
+  function select(id) {
+    sel = id;
+    $("inspector").hidden = !id;
+    $("cflow").querySelectorAll(".cnode").forEach(n => n.classList.toggle("sel", n.dataset.node === id));
+    if (id) LAB.inspect($("inspector"), id, inspOpts()).then(() => {
+      const box = $("inspector");
+      if (!box.querySelector(".ins-close")) box.insertAdjacentHTML("afterbegin", '<button type="button" class="ins-close link-btn" aria-label="Close">Close ✕</button>');
+    });
+  }
+  $("inspector").addEventListener("click", e => { if (e.target.closest(".ins-close")) { select(null); if (graph) { graph.sel = null; graph.draw(); } } });
+  /* built once, then only the values, colours and sparklines are updated (clicks are never lost) */
+  function arrow(k, v) {
+    const prev = LAB.prevVals[0] ? LAB.prevVals[0][k] : null;
+    if (prev == null || v == null) return "";
+    const d = v - prev, rel = Math.abs(d) / Math.max(Math.abs(v), Math.abs(prev), 1e-6);
+    return rel > 0.03 && Math.abs(d) > 0.05 ? `<span class="arr ${d > 0 ? "up" : "dn"}">${d > 0 ? "▲" : "▼"}</span>` : "";
+  }
+  function renderFlow(s) {
+    if (!$("cflow").children.length) {
+      $("cflow").innerHTML = CHAINS.map(([name, keys, text], r) => `<div class="crow"><div class="cr-h"><b>${name}</b><span>${OS.esc(text)}</span><span class="cr-b" data-row="${r}"></span></div>
+        <div class="cr-nodes">${keys.map(k => `<button type="button" class="cnode" data-node="${k}" title="Why did ${OS.esc(LAB.label(k))} change?"><span class="cn-k">${OS.esc(LAB.label(k))}</span><span class="cn-v"></span><span class="cn-s"></span></button>`).join('<span class="cr-arr" aria-hidden="true">→</span>')}</div></div>`).join("");
+    }
+    CHAINS.forEach(([, keys], r) => {
+      const l = Math.min(3, Math.max(...keys.map(k => LAB.levelOf(k, s.values[k]))));
+      $("cflow").querySelector(`[data-row="${r}"]`).innerHTML = badge(l);
+    });
+    $("cflow").querySelectorAll(".cnode").forEach(n => {
+      const k = n.dataset.node, v = s.values[k];
+      n.className = `cnode l${Math.min(3, LAB.levelOf(k, v))}${k === sel ? " sel" : ""}`;
+      n.querySelector(".cn-v").innerHTML = LAB.fmt(k, v) + arrow(k, v);
+      n.querySelector(".cn-s").innerHTML = LAB.spark(k, 120, 22);
+    });
+  }
+  $("cflow").addEventListener("click", e => { const b = e.target.closest(".cnode"); if (b) select(sel === b.dataset.node ? null : b.dataset.node); });
+
+  /* ---------------- full dependency graph (Advanced, collapsed by default) */
+  let graph = null, laidOut = false;
+  function ensureGraph() {
+    if (graph) return;
+    graph = LAB.Graph($("graph"), { onSelect: id => select(id) });
+    $("gTabs").innerHTML = [["all", "All subsystems"]].concat(LAB.LANES).map(([k, n]) => `<button type="button" data-v="${k}" class="${k === "all" ? "sel" : ""}">${n}</button>`).join("");
+    $("gTabs").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; $("gTabs").querySelectorAll("button").forEach(x => x.classList.toggle("sel", x === b)); graph.setView(b.dataset.v); });
+  }
+  $("depGraph").addEventListener("toggle", () => { if ($("depGraph").open) { ensureGraph(); graph.layout(); laidOut = true; } });
+
+  function healthMsg(s) {
+    const S = s.status, p = S.primary[0];
+    let m = p ? `Primary cause: <b>${OS.esc(p.name)}</b> <span class="muted">· ${OS.esc(p.subsystem)}</span><div class="small muted">${OS.esc(p.via)}</div>`
+              : `<b>Running normally</b> — every detection rule is below its warning threshold.`;
+    if (S.secondary.length) m += `<div class="small" style="margin-top:4px">Cascade: ${S.secondary.map(x => OS.esc(x.name)).join(", ")}</div>`;
+    if (S.episode && S.episode.metastable) m += `<div class="meta-warn">Self-sustaining failure: ${OS.esc(S.episode.metastable.loop.join(" → "))}. Use Recovery.</div>`;
+    return m;
+  }
+
+  /* ---------------- events table */
+  const evRows = list => list.map(e => `<tr><td class="time">${OS.clock(e.ts)}</td><td class="kind"><span class="kind-tag ${e.level}">${OS.esc(e.kind)}</span></td><td>${OS.esc(e.msg)}</td></tr>`).join("");
+
+  /* ---------------- render loop */
+  let lastEv = null, lastInsp = 0;
+  LAB.onState(s => {
+    $("hStatus").innerHTML = `<div class="big-status s-${s.health}"><span class="status-dot"></span><span class="bw">${s.health}</span></div>`;
+    $("hMsg").innerHTML = healthMsg(s) + (s.paused ? ' <span class="pill NEUTRAL">paused</span>' : "");
+    $("whyLink").hidden = s.level === 0 && !(s.episodes || []).length;
+    $("hStrip").innerHTML = strip(s);
+    drawChart();
+    renderFlow(s);
+    $("depGraph").hidden = mode !== "advanced";
+    if (graph && laidOut && $("depGraph").open) graph.update(s);
+    if (sel && Date.now() - lastInsp > 2000 && !$("inspector").matches(":hover")) { lastInsp = Date.now(); select(sel); }
+    LAB.syncControls(s, s.paused || !!s.runner);
+    $("ctlAside").textContent = s.runner ? "An experiment is driving the controls." : s.paused ? "Simulation paused — controls are locked." : "";
+    $("btnPause").textContent = s.paused ? "Resume" : "Pause";
+    const rec = s.recording, run = s.runner;
+    $("btnRec").innerHTML = rec ? '<span class="rec-dot"></span>Stop recording' : "● Record";
+    $("btnRec").classList.toggle("recording", !!rec);
+    $("runBanner").hidden = !rec && !run;
+    if (run) {
+      $("runText").innerHTML = `<b>Experiment running:</b> ${OS.esc(run.name)} — ${run.elapsed.toFixed(0)} / ${run.duration} s`;
+      $("runProg").hidden = false; $("runProg").querySelector("i").style.width = Math.min(100, run.elapsed / run.duration * 100) + "%";
+    } else if (rec) { $("runText").innerHTML = `<span class="rec-dot"></span><b>Recording:</b> ${OS.esc(rec.name)}`; $("runProg").hidden = true; }
+    $("btnStopRun").textContent = run ? "Stop experiment" : "Stop & save recording";
+    $("stressNow").innerHTML = s.stress ? `<span class="badge l3">Active</span> ${OS.esc(M.stress_kinds[s.stress.kind])} · ${s.stress.intensity}%` : '<span class="badge l0">Normal</span> no stress applied';
+    $("btnStressClear").hidden = !s.stress;
+    $("btnStress").disabled = !!run;
+    const ev = LAB.events.filter(e => e.kind !== "THRESHOLD").slice(-8).reverse();
+    const key = ev.map(e => e.seq).join(",");
+    if (key !== lastEv) {
+      lastEv = key;
+      $("events").innerHTML = ev.length
+        ? `<div class="tbl-wrap"><table class="data events-tbl"><thead><tr><th>Time</th><th>Type</th><th>Event</th></tr></thead><tbody>${evRows(ev)}</tbody></table></div>`
+        : '<div class="state-box"><div class="st-t">No events yet</div>Move a control or inject stress — every change is listed here.</div>';
+    }
+  });
+  LAB.start();
+})();
+</script>
+{% endblock %}

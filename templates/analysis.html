@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% block title %}Failure Analysis{% endblock %}
+{% block content %}
+<div class="page wide">
+  <div class="page-head">
+    <div>
+      <h1 id="pTitle">Failure Analysis</h1>
+      <div class="q" id="pSub">Why did the server fail? Root cause, cascade and recovery — generated from what the simulation recorded.</div>
+    </div>
+    <div class="head-actions"><label class="picker small muted" id="pickWrap" hidden>Failure episode <select id="pick"></select></label></div>
+  </div>
+  <div id="report"><div class="state-box"><span class="spinner"></span>Loading analysis…</div></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/lab-report.js') }}"></script>
+<script>
+(async function () {
+  await LAB.loadMeta();
+  const $ = OS.$;
+  const want = {{ rid if rid else 'null' }};
+  let runs = [], runEps = {}, choice = null, lastKey = "";
+  async function loadRuns() {
+    runs = await OS.api("/api/lab/runs");
+    if (want && !runEps[want]) { const r = await OS.api("/api/lab/runs/" + want); runEps[want] = r.episodes || []; }
+  }
+  await loadRuns();
+  /* ---- Recovery Analysis: only the failure most recently fixed with Recovery, and only while
+          nothing newer has happened (a live failure or a later failure always takes over) */
+  const recShown = s => {
+    const r = s.last_recovery;
+    if (!r) return false;
+    if (s.current_episode && s.current_episode.id !== r.episode_id) return false;            // a newer live failure
+    return !(s.episodes || []).some(e => e.id !== r.episode_id && e.start_ts > r.requested_ts); // or a newer one that ended
+  };
+  // failures from before the last Recovery belong to that recovery, not to the current session list
+  const afterRec = (s, e) => !s.last_recovery || e.start_ts > s.last_recovery.requested_ts;
+  let lastRecId = null;
+  function renderRecovery(rec) {
+    const f = rec.failure, r = f && f.rca, B = rec.before, A = rec.after;
+    const prim = r && r.primary.name ? r.primary.name : "Server failure";
+    const sub = r && r.primary.subsystem ? r.primary.subsystem : "—";
+    const t0 = rec.requested_ts;
+    const st = rec.status === "RECOVERED" ? ["RECOVERED", "✓ Recovery successful", "The server is operational and has returned to a healthy state."]
+      : rec.status === "FAILED" ? ["FAILED", "⚠ Recovery failed", "The server could not be fully restored — see the verification below."]
+      : ["RECOVERING", "Recovering…", "The recovery actions were applied and the server is returning to normal. Its health is checked on every sample."];
+    const fd = f && f.first_detection, fa = f && f.failure_at;
+    const li = a => (a || []).map(x => `<li>${OS.esc(x)}</li>`).join("");
+    // plain-language explanation built from the recorded failure and the recovery actions
+    const expl = `${f ? `The server entered a <b>${OS.esc(B.health)}</b> state because of <b>${OS.esc(prim)}</b> in ${OS.esc(sub)}${r.primary.via ? ` (${OS.esc(r.primary.via)})` : ""}${r.secondary.length ? `, which then caused ${OS.esc(r.secondary.map(x => x.name).join(", "))}` : ""}. ` : `The server was in a <b>${OS.esc(B.health)}</b> state. `}
+      When Recovery was requested, the system ${rec.actions.length ? "performed " + rec.actions.length + " recovery action" + (rec.actions.length > 1 ? "s" : "") : "restored the baseline state"} (listed below), and the server then returned to normal on its own as the load fell and the queues drained — the simulation was not restarted.
+      ${rec.status === "RECOVERING" ? "The load is now falling and the queues are draining; every detection rule is checked on each sample." : `It then checked every detection rule: ${rec.status === "RECOVERED" ? "all were below their warning thresholds in 3 consecutive samples, so the server was confirmed <b>HEALTHY</b>" : "not every rule returned to normal, so the recovery is <b>not confirmed</b>"} ${LAB.secs(rec.recovery_time)} after Recovery was requested.`}`;
+    const steps = [
+      ["bad", "Failure detected", fd ? `${OS.esc(fd.name)} reached ${OS.esc((LAB.meta.levels || [])[fd.level] || "")} — ${OS.esc((fd.evidence || [])[0] || "")}` : `Server state ${OS.esc(B.health)}`, fd ? fd.ts : null],
+      ["bad", "Affected component identified", `${OS.esc(prim)} · ${OS.esc(sub)}${fa ? "" : ""}`, fa ? fa.ts : (f ? f.peak_ts : null)],
+      ["warn", "Recovery action initiated", "Operator clicked Recovery", t0],
+      ["rec", "Recovery actions applied", rec.actions.length ? OS.esc(rec.actions.map(a => a.split(":")[0]).join(" · ")) : "Server checked", t0],
+      [rec.healthy_ts ? "rec" : "skip", "System state restored", rec.healthy_ts ? `Every detection rule back below its warning level (${(rec.healthy_ts - t0).toFixed(1)} s after Recovery)` : "load falling, queues draining…", rec.healthy_ts],
+      [rec.status === "RECOVERING" ? "skip" : "rec", "Health check performed", rec.status === "RECOVERING" ? "in progress — waiting for 3 consecutive healthy samples" : `${rec.checks.filter(c => c.ok).length} of ${rec.checks.length} checks passed`, rec.verified_ts],
+      [rec.status === "RECOVERED" ? "ok" : rec.status === "FAILED" ? "bad" : "skip", rec.status === "FAILED" ? "Recovery not confirmed" : "Server recovered", rec.status === "RECOVERED" ? "Server operational · system health restored" : rec.status === "FAILED" ? "Some checks failed" : "pending", rec.verified_ts],
+    ];
+    const tl = `<ol class="vtimeline">${steps.map(([c, t, d, ts]) => `<li class="${c}"><div class="tt">${ts ? OS.clock(ts) : "—"}</div><div class="td"><i></i></div><div><div class="tl">${t}</div><div class="ts">${d}</div></div></li>`).join("")}</ol>`;
+    const rowsBA = [["Server status", LAB.pill(B.health, B.health), A ? LAB.pill(A.health, A.health) : "…"]];
+    const num = (k, o) => (o ? LAB.fmt(k, o.values[k]) : "…");
+    [["cpu_util", "CPU usage"], ["mem_util", "Memory usage"], ["disk_util", "Disk usage"], ["run_queue", "CPU run queue"],
+     ["response_ms", "Response time"], ["error_rate", "Error rate"], ["availability", "Service availability"]].forEach(([k, n]) => {
+      if (B.values[k] != null) rowsBA.push([n, `<span class="mono">${num(k, B)}</span>`, `<span class="mono">${num(k, A)}</span>`]);
+    });
+    const procTxt = o => `${o.values.workers_alive != null ? o.values.workers_alive + "/4 workers" : ""}${o.failed_procs.length ? ` · failed: ${OS.esc(o.failed_procs.map(p => p.name).join(", "))}` : ""}${o.blocked_procs.length ? ` · ${o.blocked_procs.length} blocked` : ""}`;
+    rowsBA.push(["Processes", procTxt(B) || "—", A ? (procTxt(A) || "—") + (A.failed_procs.length || A.blocked_procs.length ? "" : " · all running") : "…"]);
+    const checks = rec.checks.length ? `<ul class="vchecks">${rec.checks.map(c => `<li class="${c.ok ? "ok" : "bad"}"><span class="ck">${c.ok ? "✓" : "✗"}</span><div><b>${OS.esc(c.label)}</b><div class="small muted">${OS.esc(c.detail)}</div></div></li>`).join("")}</ul>`
+      : '<div class="state-box"><span class="spinner"></span>Checking the server…</div>';
+    return `
+    <section class="card rec-hero ${st[0]}"><div class="rec-status"><div><div class="rec-t">${st[1]}</div><div class="small">${st[2]}</div></div>${LAB.pill(st[0], st[0] === "RECOVERING" ? "verifying" : st[0])}</div>
+      <div class="summary-strip" style="margin-top:18px">
+        <div><div class="k">Failure detected</div><div class="v">${OS.esc(prim)}</div></div>
+        <div><div class="k">Affected component</div><div class="v small">${OS.esc(sub)}</div></div>
+        <div><div class="k">Worst state</div><div class="v">${LAB.pill(f ? f.peak_name : B.health, f ? f.peak_name : B.health)}</div></div>
+        <div><div class="k">Recovery time</div><div class="v mono">${LAB.secs(rec.recovery_time)}</div></div></div></section>
+    <section class="card" style="margin-top:20px"><div class="card-head"><h2>How the server was recovered</h2><span class="aside">Recovery #${rec.id}${f ? ` · failure lasted ${LAB.secs(rec.failure_duration)}` : ""}</span></div>
+      <p class="rec-expl">${expl}</p>
+      ${r ? `<div class="rca-k">What caused the failure</div><div class="rca-v">${OS.esc(r.trigger.text)}</div>` : ""}
+      <div class="rca-k">Recovery actions performed</div>${rec.actions.length ? `<ol class="trace">${li(rec.actions)}</ol>` : '<div class="small muted">The server was reinitialized to its healthy baseline.</div>'}
+      ${r && r.recovery.explanation ? `<div class="note">Why this fixes ${OS.esc(prim.toLowerCase())}: ${OS.esc(r.recovery.explanation)}</div>` : ""}</section>
+    <div class="rca-grid" style="margin-top:20px">
+      <div style="display:grid;gap:20px;align-content:start">
+        <section class="card"><div class="card-head"><h2>Recovery timeline</h2></div>${tl}</section>
+        <section class="card"><div class="card-head"><h2>Recovery verification</h2></div>${checks}</section>
+      </div>
+      <div style="display:grid;gap:20px;align-content:start">
+        <section class="card"><div class="card-head"><h2>Before → after recovery</h2></div>
+          <div class="tbl-wrap"><table class="data compact"><thead><tr><th></th><th>Before recovery</th><th>After recovery</th></tr></thead><tbody>
+          ${rowsBA.map(([n, b, a]) => `<tr><td>${n}</td><td>${b}</td><td>${a}</td></tr>`).join("")}</tbody></table></div>
+          <p class="small muted" style="margin:8px 0 0">Before = the moment Recovery was clicked. After = the moment the health check finished.</p></section>
+      </div></div>`;
+  }
+  function setTitle(rec) {
+    $("pTitle").textContent = rec ? "Recovery Analysis" : "Failure Analysis";
+    $("pSub").textContent = rec ? "How the most recently recovered failure was fixed — and how the recovery was verified."
+      : "Why did the server fail? Root cause, cascade and recovery — generated from what the simulation recorded.";
+  }
+
+  function options(s) {
+    const o = [];
+    if (recShown(s)) o.push(["rec", `Recovery #${s.last_recovery.id}: ${s.last_recovery.failure && s.last_recovery.failure.rca.primary.name || "server failure"} (just recovered)`]);
+    if (s.current_episode) o.push(["live", `Live: episode #${s.current_episode.id} (in progress)`]);
+    (s.episodes || []).filter(e => afterRec(s, e)).slice().reverse().forEach(e => o.push(["s" + e.id, `This session: episode #${e.id} · ${e.rca.primary.name || "?"} · ${e.peak_name}`]));
+    runs.forEach(r => (r.summary.episodes ? o.push(["r" + r.id, `Run #${r.id} · ${r.name} · ${r.primary_failure || "no failure"}`]) : null));
+    return o;
+  }
+  async function episodeFor(k, s) {
+    if (k === "live") return s.current_episode;
+    if (k[0] === "s") return (s.episodes || []).find(e => "s" + e.id === k);
+    const id = Number(k.slice(1));
+    if (!runEps[id]) runEps[id] = (await OS.api("/api/lab/runs/" + id)).episodes || [];
+    return runEps[id].slice().sort((a, b) => b.peak - a.peak)[0];
+  }
+  $("pick").addEventListener("change", () => { choice = $("pick").value; lastKey = ""; render(LAB.st, true); });
+  async function render(s, force) {
+    const o = options(s);
+    const keys = o.map(x => x[0]).join();
+    if ($("pick").dataset.k !== keys) { $("pick").innerHTML = o.map(([k, n]) => `<option value="${k}">${OS.esc(n)}</option>`).join(""); $("pick").dataset.k = keys; }
+    $("pickWrap").hidden = !o.length;
+    if (!o.length) {
+      setTitle(false);
+      if ($("report").dataset.empty !== "1") {
+        $("report").dataset.empty = "1";
+        $("report").innerHTML = `<section class="card"><div class="state-box"><div class="st-t">No failure recorded yet</div>Push the server past a threshold or inject stress in the System Lab — the root-cause analysis of every failure appears here.
+          <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap"><a class="btn btn-primary btn-sm" href="/lab">Open System Lab</a></div></div></section>`;
+      }
+      return;
+    }
+    $("report").dataset.empty = "";
+    if (recShown(s) && s.last_recovery.id !== lastRecId) { choice = "rec"; lastRecId = s.last_recovery.id; }   // a new recovery: show it
+    if (!choice || !o.some(x => x[0] === choice)) choice = want ? "r" + want : o[0][0];
+    if (choice === "r" + want && !o.some(x => x[0] === choice)) choice = o[0][0];
+    $("pick").value = choice;
+    setTitle(choice === "rec");
+    if (choice === "rec") {
+      const rec = s.last_recovery, key = "rec:" + rec.id + rec.status;
+      if (!force && key === lastKey) return;
+      lastKey = key;
+      $("report").innerHTML = renderRecovery(rec);
+      return;
+    }
+    const ep = await episodeFor(choice, s);
+    if (!ep) return;
+    const key = choice + ":" + (ep.rca ? JSON.stringify(ep.rca.timing) + ep.rca.secondary.length + ep.peak : "");
+    if (!force && key === lastKey) return;
+    lastKey = key;
+    $("report").innerHTML = LAB.renderRCA(ep);
+  }
+  let n = 0;
+  LAB.onState(s => { render(s); if (++n % 20 === 0) loadRuns(); });
+  LAB.start({ interval: 1000 });
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Architecture{% endblock %}
+{% set blocks = [
+  ("user", "Instructor", "Moves controls, injects stress, kills processes, takes locks, runs experiments"),
+  ("", "Web interface", "System Lab · Live Monitoring · Failure Analysis · Process & Resource Lab · History"),
+  ("", "Flask API", "/api/lab/* — controls, actions, stress, thresholds, record, run, replay, trace · app.py"),
+  ("core", "LabEngine — single source of truth", "One per virtual server; ticks every 0.5 s · simulator/lab/engine.py"),
+  ("core", "System model", "Controls → effective state → ~45 dependency nodes with contributions · simulator/lab/model.py, graph.py"),
+  ("core", "Detector + attribution", "Configurable thresholds, 2-sample confirmation, primary vs secondary failures · simulator/lab/detect.py"),
+  ("core", "Causal trace & root-cause analysis", "Walks the contributions back to the operator input · simulator/lab/trace.py, rca.py"),
+  ("core", "Programs", "Predefined, chaos, break-the-server, custom and replayed experiments · simulator/lab/programs.py"),
+  ("db", "SQLite", "Servers, recorded runs (config, change log, samples, events, analyses), snapshots, custom experiments"),
+] %}
+{% block content %}
+<div class="page">
+  <div class="page-head"><div><h1>Architecture</h1><div class="q">How does the laboratory work?</div></div></div>
+  <section class="card">
+    <div class="arch">
+      {% for b in blocks %}
+        <div class="blk {{ b[0] }}"><b>{{ b[1] }}</b><span>{{ b[2] }}</span></div>
+        {% if not loop.last %}<div class="down"></div>{% endif %}
+      {% endfor %}
+    </div>
+  </section>
+  <div class="grid-2" style="margin-top:20px">
+    <section class="card">
+      <div class="card-head"><h2>One sample (every 0.5 s)</h2></div>
+      <ol class="small" style="margin:0;padding-left:20px">
+        <li>A running experiment program applies its scheduled control changes.</li>
+        <li><b>Effective inputs</b> follow the controls with inertia (τ 1 s rising, 2.5 s falling).</li>
+        <li><b>State variables</b> carry over between samples: CPU run queue, disk backlog, request (accept) backlog, and the previous error rate and in-flight requests (the cascade feedback).</li>
+        <li>Every node is computed in dependency order; each records its <b>contributions</b> (which input added how much).</li>
+        <li>The <b>detector</b> evaluates its rules on the observed values only; a level is confirmed after 2 samples.</li>
+        <li><b>Attribution</b> decides, from the contributions at the moment each rule first fired, whether a failure was caused by another one (secondary) or is a root (primary).</li>
+        <li>Episodes, timeline events, the sample for the charts and the recording are written.</li>
+      </ol>
+    </section>
+    <section class="card">
+      <div class="card-head"><h2>Real vs simulated</h2></div>
+      <p class="small"><span class="src REAL">REAL</span> Read-only psutil readings of this computer (shown as host telemetry, and used only if <i>Anchor baseline to this computer</i> is on).</p>
+      <p class="small"><span class="src HYBRID">HYBRID</span> CPU and memory when the anchor is on: real baseline + simulated load.</p>
+      <p class="small"><span class="src SIMULATED">SIMULATED</span> The process table, locks, injected path delay/loss — and every control.</p>
+      <p class="small"><span class="src DERIVED">DERIVED</span> Everything else: computed by the formula shown in <i>Simulation details</i> when you click a value.</p>
+      <p class="small">Nothing on the host is stressed — no CPU burn, memory allocation, disk writes, network shaping, signals or real locks — so the application can never freeze, and a run with the anchor off is exactly reproducible from its seed.</p>
+    </section>
+  </div>
+  <section class="card" style="margin-top:20px">
+    <div class="card-head"><h2>Cascade links (can be switched off)</h2></div>
+    <ul class="clean small">
+      <li><b>Memory → disk:</b> major page faults read pages from swap: swap I/O = page faults × 0.25 IOPS joins the disk demand.</li>
+      <li><b>Memory → CPU:</b> paging overhead (kernel reclaim / fault handling) is CPU time.</li>
+      <li><b>Slow service → memory:</b> in-flight requests (Little's law, L = λ·W) each hold 1 MB.</li>
+      <li><b>Failures → load:</b> clients retry 80% of failed requests (retry storm).</li>
+      <li><b>Disk → memory stalls:</b> page-fault stalls get longer when the swap device is slow.</li>
+    </ul>
+    <p class="small muted" style="margin-bottom:0">When a feedback loop keeps the server failed after the trigger is removed, the engine reports a <b>self-sustaining (metastable) failure</b> and how to break the loop.</p>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}<script>OS.startHealthPolling();</script>{% endblock %}

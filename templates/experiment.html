@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Experiment #{{ eid }}{% endblock %}
+{% block content %}
+<div class="page">
+  <div class="crumbs"><a href="/history">Experiment History</a> / Experiment #{{ eid }}</div>
+  <div class="page-head">
+    <div>
+      <h1 id="xTitle">Experiment #{{ eid }}</h1>
+      <div class="q" id="xSub"></div>
+    </div>
+    <div class="r"><a class="btn btn-ghost btn-sm" href="/analysis?id={{ eid }}">Open in Failure Analysis</a></div>
+  </div>
+  <div id="report"><div class="card empty">Loading…</div></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/report.js') }}"></script>
+<script>
+(async function () {
+  await OS.loadMeta();
+  OS.startHealthPolling();
+  const R = await OS.loadExperiment({{ eid }});
+  OS.$("xTitle").textContent = `Experiment #${R.id} — ${R.result.failure_name}`;
+  OS.$("xSub").textContent = `${R.server ? R.server.id + " · " + R.server.name + " · " : ""}${R.timestamp} · ${R.result.mode === "interactive" ? OS.severityText(R.result) : R.severity + " severity"} · ${OS.scenarioById[R.scenario].subsystem}`;
+  OS.renderReport(OS.$("report"), R, "details");
+})();
+</script>
+{% endblock %}

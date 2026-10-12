@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Experiment History{% endblock %}
+{% block content %}
+<div class="page wide">
+  <div class="page-head">
+    <div>
+      <h1>Experiment History</h1>
+      <div class="q">Review recorded runs, replay them, and compare snapshots.</div>
+    </div>
+  </div>
+  <section class="card" style="padding:0;overflow:hidden">
+    <div class="card-head" style="padding:18px 22px 0"><h2>Recorded runs</h2><span class="aside">{{ server.id }} · stored in SQLite · click a run for charts, timeline and replay</span></div>
+    <div id="runs"><div class="state-box" style="margin:0 22px 22px"><span class="spinner"></span>Loading runs…</div></div>
+  </section>
+  <section class="card" style="margin-top:20px">
+    <div class="card-head"><h2>Snapshots</h2><span class="aside">tick 2–4 snapshots to compare them</span></div>
+    <div id="snaps" class="muted small">Loading…</div>
+    <div id="cmp" style="margin-top:14px"></div>
+  </section>
+  <details class="more" style="margin-top:20px" id="legacyBox"><summary>Experiments from the previous version<span class="aside" id="legacyCount"></span></summary><div class="body" id="legacy"></div></details>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/lab-report.js') }}"></script>
+<script>
+(async function () {
+  await LAB.loadMeta();
+  OS.startHealthPolling();
+  const $ = OS.$;
+  async function loadRuns() {
+    let rows;
+    try { rows = await OS.api("/api/lab/runs"); }
+    catch (e) { $("runs").innerHTML = '<div class="state-box err" style="margin:0 22px 22px"><div class="st-t">Could not load runs</div>The simulator did not respond.</div>'; return; }
+    if (!rows.length) { $("runs").innerHTML = '<div class="state-box" style="margin:0 22px 22px"><div class="st-t">No runs yet</div>Use <b>Record</b> in the System Lab to save a run.</div>'; return; }
+    $("runs").innerHTML = `<div class="tbl-wrap"><table class="data"><thead><tr><th>Run</th><th>Date / time</th><th>Experiment</th><th>Type</th><th>Duration</th><th>Worst state</th><th>Primary failure</th><th>Detection</th><th>Recovery</th><th></th></tr></thead><tbody>
+      ${rows.map(r => `<tr class="clickable" data-id="${r.id}" tabindex="0"><td class="mono">#${r.id}</td><td class="mono">${OS.esc(r.created)}</td><td><b>${OS.esc(r.name)}</b>${r.replay_of ? `<span class="sub">replay of #${r.replay_of}</span>` : ""}</td>
+        <td>${OS.esc(r.kind)}</td><td class="mono">${LAB.secs(r.duration_s)}</td><td>${LAB.pill(r.peak_health, r.peak_health)}</td><td>${OS.esc(r.primary_failure || "—")}</td>
+        <td class="mono">${LAB.secs(r.summary.detection_latency)}</td><td class="mono">${LAB.secs(r.summary.recovery_time)}</td>
+        <td><button type="button" class="btn btn-ghost btn-sm bad" data-del="${r.id}">Delete</button></td></tr>`).join("")}</tbody></table></div>`;
+  }
+  $("runs").addEventListener("click", e => {
+    const d = e.target.closest("[data-del]"); if (d) { e.stopPropagation(); OS.api("/api/lab/runs/" + d.dataset.del, { method: "DELETE" }).then(loadRuns); return; }
+    const tr = e.target.closest("tr[data-id]"); if (tr) location.href = "/runs/" + tr.dataset.id;
+  });
+  $("runs").addEventListener("keydown", e => { const tr = e.target.closest("tr[data-id]"); if (tr && e.key === "Enter") location.href = "/runs/" + tr.dataset.id; });
+
+  let snaps = [], pick = new Set();
+  const SK = ["cpu_util", "run_queue", "mem_util", "page_faults", "disk_util", "io_queue", "disk_latency", "rtt", "packet_loss", "response_ms", "error_rate", "throughput"];
+  async function loadSnaps() {
+    try { snaps = await OS.api("/api/lab/snapshots"); } catch (e) { $("snaps").textContent = "Could not load snapshots."; return; }
+    $("snaps").innerHTML = snaps.length ? `<div class="chips small">${snaps.map(s => `<button type="button" data-s="${s.id}" class="${pick.has(s.id) ? "sel" : ""}">#${s.id} · ${OS.esc(s.name)}</button>`).join("")}</div>`
+      : "No snapshots yet — use <b>Record → Save snapshot</b> in the System Lab (e.g. once in NORMAL, once under high CPU, once in CRITICAL).";
+    cmp();
+  }
+  $("snaps").addEventListener("click", e => { const b = e.target.closest("[data-s]"); if (!b) return; const id = Number(b.dataset.s); pick.has(id) ? pick.delete(id) : pick.size < 4 && pick.add(id); loadSnaps(); });
+  function cmp() {
+    const S = snaps.filter(s => pick.has(s.id)).sort((a, b) => a.id - b.id);
+    if (S.length < 2) { $("cmp").innerHTML = S.length ? '<p class="small muted">Select one more snapshot.</p>' : ""; return; }
+    const head = `<tr><th></th>${S.map(s => `<th>#${s.id} ${OS.esc(s.name)}</th>`).join("")}</tr>`;
+    const rowH = `<tr><td>System health</td>${S.map(s => `<td>${LAB.pill(s.data.health, s.data.health)}</td>`).join("")}</tr>
+      <tr><td>Primary failure</td>${S.map(s => `<td>${OS.esc(s.data.primary || "—")}</td>`).join("")}</tr>`;
+    const ctl = LAB.meta.controls.filter(c => S.some(s => s.data.controls[c.key] !== S[0].data.controls[c.key])).map(c =>
+      `<tr><td>${OS.esc(c.label)} <span class="muted small">(control)</span></td>${S.map(s => `<td class="mono">${LAB.fmtCtl(c, s.data.controls[c.key])} ${OS.esc(c.unit)}</td>`).join("")}</tr>`).join("");
+    const met = SK.map(k => `<tr><td>${OS.esc(LAB.label(k))}</td>${S.map((s, i) => { const v = s.data.values[k], b = S[0].data.values[k];
+      const cls = i && v != null && b != null && Math.abs(v - b) > Math.max(Math.abs(b) * 0.1, 0.5) ? (v > b ? (k === "throughput" ? "dn" : "up") : (k === "throughput" ? "up" : "dn")) : "";
+      return `<td class="mono ${cls}">${LAB.fmt(k, v)}</td>`; }).join("")}</tr>`).join("");
+    $("cmp").innerHTML = `<div class="tbl-wrap"><table class="data compact snapcmp"><thead>${head}</thead><tbody>${rowH}${ctl}${met}</tbody></table></div><p class="small muted">Red = worse than the first snapshot, green = better.</p>`;
+  }
+  async function loadLegacy() {
+    const rows = await OS.api("/api/experiments");
+    $("legacyCount").textContent = rows.length + " experiments (read-only)";
+    $("legacyBox").hidden = !rows.length;
+    $("legacy").innerHTML = `<div class="tbl-wrap"><table class="data compact"><thead><tr><th>ID</th><th>Date / time</th><th>Failure</th><th>Severity</th><th>Detection</th><th>Recovery</th></tr></thead><tbody>${rows.map(r =>
+      `<tr class="clickable" onclick="location.href='/experiment/${r.id}'"><td class="mono">#${r.id}</td><td class="mono">${OS.esc(r.timestamp)}</td><td>${OS.esc(r.failure_name)}</td><td>${OS.esc(r.severity)}</td><td class="mono">${LAB.secs(r.detection_latency)}</td><td class="mono">${LAB.secs(r.recovery_time)}</td></tr>`).join("")}</tbody></table></div>`;
+  }
+  loadRuns(); loadSnaps(); loadLegacy();
+})();
+</script>
+{% endblock %}
