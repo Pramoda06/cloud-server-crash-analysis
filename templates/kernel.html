@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block title %}Kernel Failure Lab{% endblock %}
+{% block content %}
+<div class="page wide">
+  <div class="page-head">
+    <div>
+      <div class="crumbs">OS Labs</div>
+      <h1>Kernel Failure Lab</h1>
+      <div class="q">A simulated kernel panic, the reboot that follows, and what survives it.</div>
+    </div>
+    <div class="head-actions"><span id="hPill"></span></div>
+  </div>
+  <div class="sim-banner" role="note"><b>Simulation only.</b> This lab is a state machine inside the simulator. It never panics, reboots or slows your computer — no sysrq, no reboot command, no kernel modules.</div>
+
+  <div class="k-grid">
+    <!-- setup -->
+    <section class="card">
+      <div class="card-head"><h2>1 · Choose a failure</h2></div>
+      <div class="k-scen" id="scen" role="radiogroup" aria-label="Kernel failure scenario"></div>
+      <details class="learn" open><summary>Kernel settings</summary>
+        <div class="k-opts">
+          <label class="bfield">kernel.panic <span class="small">seconds before automatic reboot (0 = stay frozen)</span><input type="number" id="oTimeout" min="0" max="60" value="10"></label>
+          <label class="toggle-row"><input type="checkbox" id="oOops"><span><b>kernel.panic_on_oops</b><span class="small muted">turn a kernel oops into a panic</span></span></label>
+          <label class="toggle-row"><input type="checkbox" id="oOom"><span><b>vm.panic_on_oom</b><span class="small muted">panic instead of running the OOM killer</span></span></label>
+          <label class="toggle-row"><input type="checkbox" id="oKdump"><span><b>kdump</b><span class="small muted">save a crash dump before rebooting (slower)</span></span></label>
+        </div>
+      </details>
+      <div class="k-start"><button type="button" class="btn btn-danger" id="btnStart">Start experiment</button><button type="button" class="btn btn-ghost btn-sm" id="btnReset">Reset lab</button></div>
+    </section>
+
+    <!-- lifecycle -->
+    <section class="card">
+      <div class="card-head"><h2>2 · Observe the lifecycle</h2><span class="aside" id="stageAside"></span></div>
+      <ol class="k-steps" id="steps"></ol>
+      <div class="k-act" id="act"></div>
+      <div class="label" style="margin-top:16px">Console <span class="prov simulated">simulated output</span></div>
+      <pre class="k-console" id="console" aria-live="polite" tabindex="0"></pre>
+    </section>
+  </div>
+
+  <div class="two-col section">
+    <section class="card">
+      <div class="card-head"><h2>3 · What happened</h2><span class="aside" id="outAside"></span></div>
+      <div id="story"></div>
+    </section>
+    <section class="card">
+      <div class="card-head"><h2>Lost vs preserved</h2></div>
+      <div id="state"></div>
+      <details class="learn"><summary>What happens to data in a real kernel panic</summary>
+        <ul class="clean small">
+          <li><b>Lost — everything only in RAM:</b> processes and their memory, run and I/O queues, network connections, open transactions, and the page cache — including <i>dirty pages</i> (writes the kernel had accepted but not yet written to disk).</li>
+          <li><b>Preserved — what was already on disk:</b> files, and every database transaction that was committed with <span class="mono">fsync</span>. The file system's <b>journal</b> is replayed at boot, so its metadata is consistent again (ext4 default: metadata journalling).</li>
+          <li><b>kdump:</b> if enabled, a second, small "capture" kernel boots and saves the crashed kernel's memory to disk as a <span class="mono">vmcore</span> file for later analysis (crash / gdb).</li>
+          <li>In this app the panic is simulated: the experiment history in SQLite (<span class="mono">database/experiments.db</span>) is never at risk, and each kernel experiment is saved there with its timeline and this lost / preserved list.</li>
+        </ul></details>
+    </section>
+  </div>
+
+  <section class="card flush section">
+    <div class="card-head"><h2>Timeline</h2><span class="aside">simulated seconds after the trigger · “—” telemetry means the monitoring agent died with the host</span></div>
+    <div id="tl"></div>
+  </section>
+
+
+  <section class="card section">
+    <div class="card-head"><h2>Not every failure is a kernel panic</h2><span class="aside">what keeps running, and how each one recovers</span></div>
+      <div class="tbl-wrap"><table class="data compact ftypes">
+      <thead><tr><th>Failure</th><th>Example</th><th>Kernel keeps running?</th><th>Usual recovery</th></tr></thead>
+      <tbody>
+        <tr><td><b>Process failure</b></td><td>web-worker gets SIGSEGV</td><td class="yes">yes</td><td>restart the process</td></tr>
+        <tr><td><b>Resource exhaustion</b></td><td>CPU 100%, memory thrashing, disk queue</td><td class="yes">yes (slow)</td><td>reduce load, kill a hog</td></tr>
+        <tr><td><b>System unresponsive</b></td><td>deadlock, retry storm, heavy thrashing</td><td class="yes">yes, but nothing progresses</td><td>break the cycle / shed load</td></tr>
+        <tr><td><b>Kernel panic</b></td><td>kernel bug, PID 1 death, fatal hardware error</td><td class="no">no — the OS stops</td><td>reboot (automatic or manual)</td></tr>
+      </tbody></table></div>
+  </section>
+  <section class="section">
+    <details class="learn"><summary>Limitations of this simulation</summary>
+      <ul class="clean small">
+        <li>Stage durations are illustrative simulated seconds, not measurements of real hardware.</li>
+        <li>Console lines are written to look like Linux output; they are not captured from a kernel.</li>
+        <li>The model does not emulate kernel internals (interrupts, page tables, drivers); it models what an operator sees: the panic, what stops, the boot sequence, what is lost and what survives.</li>
+        <li>A real panic can be studied safely only in a disposable virtual machine — see <span class="mono">docs/KERNEL_LAB.md</span>. The normal application never does this.</li>
+      </ul></details>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(async function () {
+  await LAB.loadMeta();
+  const $ = OS.$, esc = OS.esc, SC = LAB.meta.kernel_scenarios;
+  let pick = SC[0].id;
+  $("scen").innerHTML = SC.map(s => `<button type="button" role="radio" data-s="${s.id}" class="kcard"><span class="kc-cause">${esc(s.cause)}</span><b>${esc(s.name)}</b><span class="small muted">${esc(s.trigger)}</span></button>`).join("");
+  const markPick = () => $("scen").querySelectorAll(".kcard").forEach(b => { b.classList.toggle("sel", b.dataset.s === pick); b.setAttribute("aria-checked", b.dataset.s === pick); });
+  markPick();
+  $("scen").addEventListener("click", e => { const b = e.target.closest(".kcard"); if (b && !b.disabled) { pick = b.dataset.s; markPick(); } });
+  const opts = () => ({ panic_timeout: Number($("oTimeout").value), panic_on_oops: $("oOops").checked, panic_on_oom: $("oOom").checked, kdump: $("oKdump").checked });
+  const k = (body, quiet) => LAB.post("/api/lab/kernel", body).then(r => { if (!quiet) LAB.toast(typeof r.result === "string" ? r.result : "Saved"); return r; });
+  ["oTimeout", "oOops", "oOom", "oKdump"].forEach(id => $(id).addEventListener("change", () => k({ op: "options", options: opts() }, true).catch(() => {})));
+  $("btnStart").addEventListener("click", async () => { await k({ op: "options", options: opts() }, true); k({ op: "trigger", scenario: pick }); });
+  $("btnReset").addEventListener("click", () => k({ op: "reset" }));
+  $("act").addEventListener("click", e => { const b = e.target.closest("button[data-op]"); if (b) k({ op: b.dataset.op }); });
+
+  const STAGES = [["RUNNING", "Running"], ["TRIGGERING", "Trigger"], ["PANIC", "Panic"], ["KDUMP", "Crash dump"], ["FIRMWARE", "Firmware"], ["BOOTLOADER", "Bootloader"], ["KERNEL_INIT", "Kernel init"], ["MOUNT_ROOT", "Mount root"], ["INIT", "init (PID 1)"], ["SERVICES", "Services"], ["POST_CHECK", "Health checks"]];
+  let optsSynced = false;
+  function render(s) {
+    const K = s.kernel, R = K.run;
+    $("hPill").innerHTML = LAB.pill(s.health, s.health);
+    if (!optsSynced || K.stage !== "RUNNING") { $("oTimeout").value = K.options.panic_timeout; $("oOops").checked = K.options.panic_on_oops; $("oOom").checked = K.options.panic_on_oom; $("oKdump").checked = K.options.kdump; optsSynced = true; }
+    const busy = K.stage !== "RUNNING";
+    if (R && (busy || !R.outcome) && pick !== R.scenario) { pick = R.scenario; markPick(); }     // show what is running
+    $("btnStart").disabled = busy; $("scen").querySelectorAll(".kcard").forEach(b => (b.disabled = busy));
+    ["oTimeout", "oOops", "oOom", "oKdump"].forEach(id => ($(id).disabled = busy));
+    // lifecycle stepper
+    const seen = new Set((R ? R.timeline : []).map(t => t.stage));
+    const cur = K.stage === "HALTED" ? "PANIC" : K.stage;
+    const ci = STAGES.findIndex(x => x[0] === cur);
+    $("steps").innerHTML = STAGES.filter(([id]) => id !== "KDUMP" || K.options.kdump || seen.has("KDUMP")).map(([id, n]) => {
+      const i = STAGES.findIndex(x => x[0] === id);
+      const cls = id === cur && busy ? (["PANIC", "TRIGGERING"].includes(id) ? "now bad" : "now") : (R && !R.outcome && seen.has(id) && i < ci) || (R && R.outcome && seen.has(id)) ? "done" : "";
+      return `<li class="${cls}"><i></i><span>${n}</span></li>`;
+    }).join("");
+    $("stageAside").innerHTML = busy ? `<b>${esc(K.stage)}</b> · ${esc(K.stage_text)}${K.stage_elapsed != null ? ` · ${K.stage_elapsed.toFixed(1)} s` : ""}` : K.tainted ? '<span class="flag warn">kernel tainted</span>' : "running normally";
+    const acts = [];
+    if (K.stage === "HALTED") acts.push(`<div class="verdict bad">The machine is frozen (kernel.panic = ${K.options.panic_timeout}${R && R.panics >= 3 ? ", or a boot loop was detected" : ""}). Nothing will happen until an operator acts.</div>`);
+    if (K.stage === "PANIC" || K.stage === "HALTED") acts.push(`<button type="button" class="btn btn-ghost btn-sm" data-op="power_cycle">Power-cycle (hard reset)</button>`);
+    if (K.bad_kernel && R && !R.outcome && R.recovery !== "fallback" && (R.panics > 0)) acts.push(`<button type="button" class="btn btn-primary btn-sm" data-op="fallback">Boot the previous kernel (GRUB)</button>`);
+    if (K.stage === "PANIC" && K.options.panic_timeout > 0) acts.push(`<span class="small muted">Automatic reboot in ${Math.max(0, K.options.panic_timeout - (K.stage_elapsed || 0)).toFixed(1)} s (kernel.panic = ${K.options.panic_timeout})</span>`);
+    $("act").innerHTML = acts.join("");
+    const con = R ? R.console.join("\n") : "";
+    if ($("console").textContent !== con) { $("console").textContent = con || "(no kernel messages yet — start an experiment)"; $("console").scrollTop = 1e9; }
+    // story
+    if (!R) {
+      $("story").innerHTML = '<div class="small muted">Choose a failure and press <b>Start experiment</b>. Each step below is driven by the simulation state, not an animation.</div>';
+      $("state").innerHTML = '<div class="small muted">Appears after a panic.</div>'; $("tl").innerHTML = ""; $("outAside").innerHTML = "";
+    } else {
+      const sc = SC.find(x => x.id === R.scenario);
+      const pillO = R.outcome ? LAB.pill(R.outcome === "RECOVERED" ? "RECOVERED" : /NO PANIC/.test(R.outcome) ? "WARNING" : "FAILED", R.outcome) : LAB.pill("RECOVERING", "in progress");
+      $("outAside").innerHTML = pillO;
+      const before = (R.before_events || []).slice(-4);
+      LAB.setHTML($("story"), `<div class="ex-h">Scenario</div><p><b>${esc(R.name)}</b> <span class="prov">${esc(R.cause)}</span></p>
+        <div class="ex-h">Trigger</div><p class="small">${esc(R.trigger)}</p>
+        <div class="ex-h">Why the kernel ${R.oops_only || R.oom_killed ? "did not panic" : "panicked"}</div>
+        <ul class="clean small">${R.oops_only ? "<li>panic_on_oops is 0: the oops killed only the task that hit the bug. The kernel continues but is marked tainted.</li>" : R.oom_killed ? `<li>panic_on_oom is 0: the OOM killer freed memory instead — ${esc(R.oom_killed)}.</li>` : sc.why.map(w => `<li>${esc(w)}</li>`).join("")}</ul>
+        ${before.length ? `<details class="learn"><summary>Last events before the trigger</summary><ul class="clean small">${before.map(x => `<li>${esc(x)}</li>`).join("")}</ul></details>` : ""}
+        ${R.checks && R.checks.length ? `<div class="ex-h" style="margin-top:10px">Post-recovery checks</div><ul class="vchecks">${R.checks.map(c => `<li class="${c.ok ? "ok" : "bad"}"><span class="ck">${c.ok ? "✓" : "✗"}</span><div><b>${esc(c.label)}</b><div class="small muted">${esc(c.detail)}</div></div></li>`).join("")}</ul>` : ""}
+        ${R.outcome ? `<div class="note">${esc(R.why_outcome)}.${R.downtime_s != null ? ` Simulated downtime ${R.downtime_s} s (panic → services back), ${R.panics} panic${R.panics > 1 ? "s" : ""}.` : ""}</div>` : ""}
+        <div class="ex-h" style="margin-top:12px">What to learn</div><p class="small">${esc(sc.learn)}</p>`);
+      const li = a => (a || []).map(x => `<li>${esc(x)}</li>`).join("");
+      $("state").innerHTML = R.lost.length ? `<div class="ex-h">Lost (volatile)</div><ul class="clean small lost">${li(R.lost)}</ul>
+        <div class="ex-h">Preserved (persistent)</div><ul class="clean small kept">${li(R.preserved)}</ul>
+        <div class="ex-h">Unavailable while down</div><ul class="clean small">${li(R.unavailable)}</ul>`
+        : `<div class="small muted">${R.oops_only || R.oom_killed ? "No panic: only the killed process lost its memory. Everything else kept running." : "Appears when the kernel panics."}</div>`;
+      LAB.setHTML($("tl"), `<div class="tbl-wrap"><table class="data compact"><thead><tr><th>t</th><th>Stage</th><th>Event</th></tr></thead><tbody>${R.timeline.map(t => `<tr class="k-${t.kind}"><td class="mono">${t.t.toFixed(1)} s</td><td class="mono small">${esc(t.stage)}</td><td class="small">${esc(t.text)}</td></tr>`).join("")}</tbody></table></div>`);
+    }
+
+  }
+  LAB.onState(render);
+  LAB.start();
+})();
+</script>
+{% endblock %}

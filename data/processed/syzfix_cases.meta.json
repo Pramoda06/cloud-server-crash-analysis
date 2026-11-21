@@ -1,0 +1,255 @@
+{
+ "source": {
+  "dataset": "SyzFix (sysec-uic) — Hugging Face xiaoguangwang/syzfix-dataset",
+  "dataset_revision": "c0c94c4fd64381e840ffd047cf553e70464334df (lastModified 2026-10-12)",
+  "published_sha256": "a98ac4c4dc4572e51c98fee48c507a3b2ff2ed40aa15583c6eed6509e4450af8",
+  "published_bytes": 54077962,
+  "citation": "Please cite https://github.com/sysec-uic/syzfix (dataset card request)",
+  "shard": "train-00000-of-00011.parquet",
+  "shards_total": 11,
+  "url": "https://huggingface.co/datasets/xiaoguangwang/syzfix-dataset/blob/main/data/train-00000-of-00011.parquet",
+  "upstream": [
+   "syzkaller.appspot.com (syzbot)",
+   "git.kernel.org",
+   "lore.kernel.org",
+   "patchwork.kernel.org"
+  ]
+ },
+ "input": {
+  "file": "train-00000-of-00011.parquet",
+  "bytes": 54077962,
+  "sha256": "a98ac4c4dc4572e51c98fee48c507a3b2ff2ed40aa15583c6eed6509e4450af8",
+  "rows": 656,
+  "matches_published": true
+ },
+ "generated_utc": "2026-10-15 18:06:31",
+ "method": {
+  "eligibility": {
+   "max_files": 3,
+   "max_lines": 60,
+   "min_commit_message_chars": 200
+  },
+  "order": "sha256(bug_id) ascending within each category",
+  "per_category_max": 6,
+  "per_subsystem_max": 2,
+  "categories": [
+   {
+    "id": "lock",
+    "name": "Lock ordering and lock misuse",
+    "title_patterns": [
+     "possible deadlock in",
+     "possible circular locking dependency",
+     "inconsistent lock state",
+     "possible recursive locking",
+     "possible irq lock inversion",
+     "bad unlock balance",
+     "^WARNING: locking bug",
+     "lock held when returning to user space"
+    ]
+   },
+   {
+    "id": "hang",
+    "name": "Hung tasks and stalls",
+    "title_patterns": [
+     "^INFO: task hung",
+     "rcu.*detected.*stall",
+     "soft lockup",
+     "hard lockup",
+     "^INFO: task .* blocked"
+    ]
+   },
+   {
+    "id": "leak",
+    "name": "Memory leaks",
+    "title_patterns": [
+     "^memory leak in",
+     "^BUG: memory leak"
+    ]
+   },
+   {
+    "id": "null",
+    "name": "NULL pointer / bad address access",
+    "title_patterns": [
+     "null-ptr-deref",
+     "^general protection fault",
+     "unable to handle (page fault|kernel NULL|kernel paging)",
+     "kernel NULL pointer dereference"
+    ]
+   },
+   {
+    "id": "memsafety",
+    "name": "Use-after-free and out-of-bounds access",
+    "title_patterns": [
+     "^KASAN: ",
+     "^KFENCE: ",
+     "use-after-free",
+     "(?<!shift-)out-of-bounds",
+     "double-free",
+     "invalid-free"
+    ]
+   },
+   {
+    "id": "uninit",
+    "name": "Use of uninitialized memory",
+    "title_patterns": [
+     "^KMSAN: ",
+     "uninit-value"
+    ]
+   },
+   {
+    "id": "assert",
+    "name": "Kernel assertions (WARN / BUG_ON)",
+    "title_patterns": [
+     "^WARNING in ",
+     "^WARNING: ",
+     "^kernel BUG",
+     "^BUG: "
+    ]
+   }
+  ],
+  "no_quotas": "categories with fewer eligible bugs simply contribute fewer cases"
+ },
+ "report": {
+  "rows_read": 656,
+  "ineligible": {
+   "no fix commit": 126,
+   "fix patch text empty in the dataset": 137,
+   "fix touches more than 3 files": 22,
+   "commit message shorter than 200 characters": 32,
+   "fix changes more than 60 lines": 10
+  },
+  "eligible_by_category": {
+   "null": 31,
+   "uninit": 24,
+   "memsafety": 53,
+   "assert": 128,
+   "hang": 8,
+   "leak": 20,
+   "lock": 44
+  },
+  "unclassified_eligible": 21,
+  "ambiguous_titles": [
+   {
+    "bug_id": "999115c3bf275797dc27",
+    "title": "BUG: unable to handle kernel paging request in sk_skb_reason_drop",
+    "matched": [
+     "null",
+     "assert"
+    ],
+    "assigned": "null"
+   },
+   {
+    "bug_id": "8f1c492ffa4644ff3826",
+    "title": "BUG: unable to handle kernel paging request in tcf_idrinfo_destroy",
+    "matched": [
+     "null",
+     "assert"
+    ],
+    "assigned": "null"
+   },
+   {
+    "bug_id": "c8c0e7ccabd456541612",
+    "title": "BUG: unable to handle kernel NULL pointer dereference in pc_clock_gettime",
+    "matched": [
+     "null",
+     "assert"
+    ],
+    "assigned": "null"
+   },
+   {
+    "bug_id": "182614a22044687c521a173bd56b6b51f20da81d",
+    "title": "BUG: unable to handle kernel NULL pointer dereference in pc_clock_adjtime",
+    "matched": [
+     "null",
+     "assert"
+    ],
+    "assigned": "null"
+   },
+   {
+    "bug_id": "8259e1d0e3ae8ed0c490",
+    "title": "WARNING: locking bug in __set_page_owner (2)",
+    "matched": [
+     "lock",
+     "assert"
+    ],
+    "assigned": "lock"
+   },
+   {
+    "bug_id": "80cb3cc5c14fad191a10",
+    "title": "WARNING: bad unlock balance in copy_process",
+    "matched": [
+     "lock",
+     "assert"
+    ],
+    "assigned": "lock"
+   },
+   {
+    "bug_id": "cef594105ac7e60c6d93",
+    "title": "WARNING: locking bug in vgic_put_irq",
+    "matched": [
+     "lock",
+     "assert"
+    ],
+    "assigned": "lock"
+   },
+   {
+    "bug_id": "49f481ace5356982f6084b7bdac96e16d216760a",
+    "title": "WARNING: possible circular locking dependency detected (5)",
+    "matched": [
+     "lock",
+     "assert"
+    ],
+    "assigned": "lock"
+   },
+   {
+    "bug_id": "b446dbe27035ef6bd6c2",
+    "title": "BUG: unable to handle kernel paging request in move_pages",
+    "matched": [
+     "null",
+     "assert"
+    ],
+    "assigned": "null"
+   },
+   {
+    "bug_id": "9b7e20f8ff98aed7254e",
+    "title": "BUG: unable to handle kernel paging request in __bch2_bkey_unpack_key",
+    "matched": [
+     "null",
+     "assert"
+    ],
+    "assigned": "null"
+   },
+   {
+    "bug_id": "c2ea94ae47cd7e3881ec",
+    "title": "BUG: unable to handle kernel paging request in ocfs2_unlock_and_free_folios",
+    "matched": [
+     "null",
+     "assert"
+    ],
+    "assigned": "null"
+   },
+   {
+    "bug_id": "2f3859bd28f20fa682e6",
+    "title": "BUG: unable to handle kernel NULL pointer dereference in bch2_btree_update_start",
+    "matched": [
+     "null",
+     "assert"
+    ],
+    "assigned": "null"
+   }
+  ],
+  "selected_by_category": {
+   "lock": 6,
+   "hang": 6,
+   "leak": 6,
+   "null": 6,
+   "memsafety": 6,
+   "uninit": 6,
+   "assert": 6
+  },
+  "skipped_subsystem_cap": 0,
+  "skipped_same_fix": 5,
+  "ambiguous_count": 12
+ },
+ "cases": 42
+}

@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Real Kernel Bugs{% endblock %}
+{% block content %}
+<div class="page wide">
+  <div class="page-head">
+    <div>
+      <div class="crumbs">Reference</div>
+      <h1>Real kernel bugs</h1>
+      <div class="q">Documented, already-fixed Linux kernel bugs: what crashed, where, and how it was fixed.</div>
+    </div>
+    <div class="head-actions"><span class="src DATASET" title="Historical records from a public dataset — not simulated, not from this computer">HISTORICAL DATASET</span></div>
+  </div>
+
+  <div class="sim-banner ds-banner" role="note" id="banner">
+    <b>Real records, not a simulation.</b> These bugs were found by Google's syzbot fuzzer and fixed upstream. They are a small,
+    deterministic subset of <b>one of eleven</b> SyzFix shards — they do not represent all SyzFix bugs, and fuzzer findings are
+    <b>not</b> production crash frequencies. Nothing here comes from your computer or changes the simulator.
+  </div>
+
+  <div id="body"><div class="state-box"><span class="spinner"></span>Loading…</div></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(async function () {
+  const $ = OS.$, esc = OS.esc;
+  OS.startHealthPolling();
+  let D;
+  try { D = await OS.api("/api/cases"); } catch (e) { $("body").innerHTML = `<div class="state-box err">${esc(e.message)}</div>`; return; }
+  if (!D.available) {
+    $("body").innerHTML = `<section class="card"><div class="state-box"><div class="st-t">Case studies not prepared yet</div>
+      The subset is built from your own downloaded copy of one SyzFix shard. See <span class="mono">docs/SYZFIX.md</span>:
+      put <span class="mono">train-00000-of-00011.parquet</span> in <span class="mono">data/raw/syzfix/</span> and run
+      <span class="mono">python scripts/prepare_syzfix_subset.py</span>.</div></section>`;
+    return;
+  }
+  const M = D.meta || {}, R = M.report || {}, NAMES = D.category_names, EX = D.explain;
+  const cats = (D.category_order || Object.keys(NAMES)).filter(c => D.cases.some(x => x.category === c));
+  let pick = (location.hash || "").slice(1);
+  if (!cats.includes(pick)) pick = cats[0];
+  const sel = () => D.cases.filter(c => c.category === pick);
+  const nd = '<span class="muted">not documented in the available source</span>';
+  // "Linux-2.6.12-rc2" (1da177e4c3f4) is the first commit of the kernel's git history: the bug predates git.
+  const fixesTxt = f => f.fixes && f.fixes.length ? f.fixes.map(x => `<span class="mono">${esc(x.hash)}</span>${x.title ? ` (“${esc(x.title)}”)` : ""}${x.hash.startsWith("1da177e4c3f4") ? ' <span class="small muted">— the first commit of kernel git history (2005): the code was already present then</span>' : ""}`).join("<br>")
+    : '<span class="muted">not documented in the available source</span> <span class="small muted">(the fix has no <span class="mono">Fixes:</span> tag)</span>';
+  function caseCard(c) {
+    const f = c.fix, L = c.local_text;
+    return `<article class="card case" id="${esc(c.bug_id)}">
+      <div class="case-h"><h3>${esc(c.title)}</h3><span class="src DATASET">dataset record</span></div>
+      <dl class="case-grid">
+        <dt>Symptom</dt><dd><b>${esc(c.title)}</b>
+          <div class="small muted">Top of the call trace${c.call_trace_functions.length ? "" : ": " + nd}</div>
+          ${c.call_trace_functions.length ? `<div class="frames">${c.call_trace_functions.map(esc).map(x => `<span class="mono">${x}()</span>`).join('<span class="muted">←</span>')}</div>` : ""}
+          ${c.address_kind ? `<div class="small">Address accessed, as stated in the report: <b>${esc(c.address_kind)}</b></div>` : ""}
+          ${L && L.crash_excerpt ? `<details class="learn"><summary>Crash report excerpt (your local copy)</summary><pre class="excerpt">${esc(L.crash_excerpt)}</pre></details>` : ""}
+          <a class="small" href="${esc(c.links.syzbot)}" target="_blank" rel="noopener">Full crash report on syzbot ↗</a></dd>
+        <dt>Subsystem</dt><dd>${c.subsystem ? `<span class="mono">${esc(c.subsystem)}</span> <span class="small muted">(${esc(c.subsystem_source)})</span>` : nd}</dd>
+        <dt>Identified cause</dt><dd>
+          <div class="small muted">Commit that introduced the bug, as named in the fix's <span class="mono">Fixes:</span> tag</div>${fixesTxt(f)}
+          ${L && L.commit_message_excerpt ? `<details class="learn"><summary>Developer's explanation (your local copy)</summary><pre class="excerpt prose">${esc(L.commit_message_excerpt)}</pre></details>`
+            : `<div class="small">The developer's explanation is in the commit message: <a href="${esc(c.links.commit)}" target="_blank" rel="noopener">read it on git.kernel.org ↗</a></div>`}</dd>
+        <dt>Fix</dt><dd><b>${f.title ? esc(f.title) : nd}</b> <span class="small muted mono">${esc(f.hash.slice(0, 12))}</span>
+          <div class="small">${f.files.map(x => `<span class="mono">${esc(x.path)}</span> <span class="add">+${x.added}</span> <span class="del">−${x.removed}</span>`).join("<br>")}</div>
+          ${f.bugs_in_shard > 1 ? `<div class="small muted">syzbot links this fix commit to ${f.bugs_in_shard} bug reports in this shard; one is shown.</div>` : ""}
+          ${f.functions.length ? `<div class="small muted">Functions changed: ${f.functions.map(x => `<span class="mono">${esc(x)}</span>`).join(", ")}</div>` : ""}
+          <details class="learn"><summary>Code change excerpt (GPL-2.0)</summary><pre class="excerpt diff">${f.diff_excerpt.split("\n").map(l => `<span class="${l.startsWith("+") ? "add" : l.startsWith("-") ? "del" : ""}">${esc(l)}</span>`).join("\n")}</pre></details></dd>
+        <dt>Timeline</dt><dd>first crash ${esc(c.first_crash_date || "—")} → fixed ${esc(c.fix_date || "—")}${c.days_to_fix != null ? ` · <b>${c.days_to_fix} days</b>` : ""} · ${c.num_patch_versions || 0} patch version${c.num_patch_versions === 1 ? "" : "s"} · ${c.has_discussion ? "had review discussion" : "no review discussion recorded"}</dd>
+        ${c.matched_categories.length > 1 ? `<dt>Classification</dt><dd class="small">Title matched ${c.matched_categories.map(x => esc(NAMES[x])).join(" and ")}; listed under <b>${esc(c.category_name)}</b> by the precedence rule.</dd>` : ""}
+      </dl>
+      <div class="case-src small">Source: <a href="${esc(c.links.syzbot)}" target="_blank" rel="noopener">syzbot</a> · <a href="${esc(c.links.commit)}" target="_blank" rel="noopener">fix commit</a> · via SyzFix</div>
+    </article>`;
+  }
+  function render() {
+    const ex = EX[pick];
+    $("body").innerHTML = `
+      <div class="tabs" role="tablist">${cats.map(c => `<button type="button" data-c="${c}" class="${c === pick ? "sel" : ""}">${esc(NAMES[c])} <span class="muted">${D.cases.filter(x => x.category === c).length}</span></button>`).join("")}</div>
+      <section class="card ex-card"><div class="ex-h">What this kind of crash means <span class="prov">lab explanation</span></div>
+        <p>${esc(ex.what)}</p><div class="small"><b>OS concept:</b> ${esc(ex.concept)}${ex.lab ? ` · <a href="${ex.lab[0]}">${esc(ex.lab[1])} →</a>` : ""}</div>
+        <div class="small muted" style="margin-top:6px">Eligible in this shard: ${(R.eligible_by_category || {})[pick] || 0} · shown: ${sel().length}</div></section>
+      <div class="case-list">${sel().map(caseCard).join("")}</div>
+      <details class="card learn tech" id="method"><summary>How these cases were chosen · provenance · licence</summary>
+        <ul class="clean small">
+          <li><b>Source:</b> ${esc((M.source || {}).dataset || "SyzFix")} · revision <span class="mono">${esc(((M.source || {}).dataset_revision || "").slice(0, 8))}</span> · shard <span class="mono">${esc((M.input || {}).file || "")}</span> (1 of 11) · SHA-256 <span class="mono">${esc(((M.input || {}).sha256 || "").slice(0, 16))}…</span> ${(M.input || {}).matches_published ? "(matches the published file)" : "(<b>not</b> checked against the published file)"} · ${(M.input || {}).rows || "?"} rows read. Please cite <a href="https://github.com/sysec-uic/syzfix" target="_blank" rel="noopener">github.com/sysec-uic/syzfix ↗</a>.</li>
+          <li><b>Eligible:</b> crash report present; fix patch parseable; commit message ≥ ${(M.method || {}).eligibility ? M.method.eligibility.min_commit_message_chars : 200} characters; fix touches ≤ 3 files and ≤ 60 lines.</li>
+          <li><b>Order:</b> ${esc((M.method || {}).order || "")}; at most ${(M.method || {}).per_category_max} per category, ${(M.method || {}).per_subsystem_max} per subsystem and one case per fix commit (${R.skipped_same_fix || 0} skipped because their fix was already shown). No quotas: a category with fewer eligible bugs shows fewer.</li>
+          <li><b>Ambiguous titles:</b> ${R.ambiguous_count || 0} eligible titles matched more than one category; each was assigned by a fixed precedence rule. <b>Unclassified eligible:</b> ${R.unclassified_eligible || 0} (titles that fit none of the categories — not forced into one).</li>
+          <li><b>Not eligible:</b> ${Object.entries(R.ineligible || {}).map(([k, v]) => `${esc(k)}: ${v}`).join(" · ")}.</li>
+          <li><b>Not included:</b> reproducers, mailing-list discussions, author names and e-mail addresses.</li>
+          <li><b>Licences:</b> code excerpts are Linux kernel source (GPL-2.0). Crash-report and commit-message text have no stated reuse licence, so they are <i>not</i> in this repository — they appear only if you generate the local-only excerpts from your own copy (${D.local_available ? "present on this computer" : "not generated"}).</li>
+          <li><b>Limits:</b> fuzzer-found bugs; one shard only; not production crash rates; subsystem labels marked "derived" come from file paths, not from syzbot.</li>
+        </ul></details>`;
+  }
+  $("body").addEventListener("click", e => { const b = e.target.closest("button[data-c]"); if (!b) return; pick = b.dataset.c; history.replaceState(null, "", "#" + pick); render(); });
+  render();
+})();
+</script>
+{% endblock %}

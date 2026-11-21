@@ -1,10 +1,50 @@
-venv/
+﻿# ---- Python ----
 __pycache__/
-*.pyc
-.system_generated/
-# SyzFix raw shard and local-only excerpts: never committed (see docs/SYZFIX.md)
+*.py[cod]
+.pytest_cache/
+
+# ---- Virtual environments ----
+venv/
+.venv/
+env/
+
+# ---- Databases (recreated automatically on first run) ----
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+
+# ---- Playwright / test output ----
+test-results/
+playwright-report/
+.coverage
+htmlcov/
+
+# ---- Logs ----
+*.log
+logs/
+
+# ---- Secrets ----
+.env
+.env.*
+*.pem
+*.key
+secrets.*
+
+# ---- SyzFix raw data (54 MB shard, never committed; see docs/SYZFIX.md) ----
 data/raw/
 data/local/
-# SQLite rollback journals are transient; delivery scratch folder
-database/*.db-journal
+
+# ---- Local-only files ----
+.system_generated/
 _to_delete/
+_original_backup_*.tar.gz
+*.diff
+scratch_generate_pdf.py
+Cloud_Server_Crash_Analysis_Every_Change_Report.pdf
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

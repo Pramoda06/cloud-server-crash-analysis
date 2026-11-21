@@ -1,0 +1,269 @@
+{% extends "base.html" %}
+{% block title %}Incident{% endblock %}
+{% block content %}
+<div class="page wide">
+  <div class="page-head">
+    <div>
+      <h1>Incident</h1>
+      <div class="q" id="pSub">What failed, why, how to fix it — and whether the fix really worked.</div>
+    </div>
+    <div class="head-actions">
+      <label class="picker small muted" id="pickWrap" hidden>Incident <select id="pick"></select></label>
+      <span id="hPill"></span>
+      <button type="button" class="btn btn-ghost btn-sm" id="btnClean" title="Return the simulated server to its seeded initial state">Reset to healthy</button>
+    </div>
+  </div>
+
+  <section class="card calm-card" id="calm" hidden>
+    <div class="calm-ic" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></div>
+    <h2>No incident</h2>
+    <p>The server is healthy and nothing has failed in this session yet.</p>
+    <div class="calm-act"><a class="btn btn-primary" href="/lab">Inject a failure</a></div>
+  </section>
+
+  <div class="flow" id="flow" hidden>
+    <section class="step" id="s-now"><div class="step-n">1</div><div class="step-b">
+      <div class="step-h"><h2>What failed</h2><span class="aside" id="nowAside"></span></div><div id="now"></div></div></section>
+    <section class="step" id="s-why"><div class="step-n">2</div><div class="step-b">
+      <div class="step-h"><h2>Why</h2><span class="aside">from what the simulation recorded</span></div><div id="report"></div></div></section>
+    <section class="step" id="fix"><div class="step-n">3</div><div class="step-b">
+      <div class="step-h"><h2>Fix</h2><span class="aside">each strategy changes the simulation in a different way</span></div><div id="strats"></div>
+      <details class="learn"><summary>How success is decided</summary>
+        <ul class="clean small">
+          <li>A click is not success. After a strategy is applied, the same detector that found the failure keeps checking every 0.5 s sample.</li>
+          <li><b>RECOVERED</b> — every detection rule stays below WARNING for 3 consecutive samples.</li>
+          <li><b>PARTIAL</b> — the targeted failure is cleared, but another is still active after 30 s.</li>
+          <li><b>FAILED</b> — the targeted failure is still active after 30 s.</li>
+          <li>Times are simulated seconds of this model, not measurements of a production server.</li>
+        </ul></details></div></section>
+    <section class="step" id="s-ver"><div class="step-n">4</div><div class="step-b">
+      <div class="step-h"><h2>Did it work?</h2><span class="aside" id="resAside"></span></div><div id="result"></div></div></section>
+  </div>
+
+  <details class="card section cmp-box" id="cmpBox">
+    <summary class="card-head"><h2>Compare strategies</h2><span class="aside">same seed · same failure · same moment — run side by side without touching the live server</span></summary>
+    <form class="cmp-form" id="fCmp">
+      <label class="bfield">Failure scenario<select id="cScen"></select></label>
+      <div class="bfield"><span>Strategies (up to 4)</span><div class="chips small" id="cStrats"></div></div>
+      <button type="submit" class="btn btn-primary" id="btnCmp">Run comparison</button>
+    </form>
+    <div id="cmp"></div>
+    <div class="rca-k">Previous comparisons</div>
+    <div id="prev"></div>
+  </details>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/lab-report.js') }}"></script>
+<script>
+(async function () {
+  await LAB.loadMeta();
+  const $ = OS.$, esc = OS.esc, M = LAB.meta;
+  const STR = {}; M.strategies.forEach(s => (STR[s.id] = s));
+  const RULES = M.rules;
+  const KEY = { cpu: "cpu_util", memory: "page_faults", disk: "io_queue", disk_space: "disk_used", network: "rtt", service: "response_ms", process: "error_rate", deadlock: "error_rate" };
+  const RELATED = { service: ["svc_shed", "svc_restart", "proc_restart"], process: ["proc_restart", "svc_restart", "svc_shed"] };
+  const outcomePill = o => LAB.pill({ RECOVERED: "RECOVERED", PARTIAL: "WARNING", FAILED: "FAILED", RECOVERING: "RECOVERING", "NOT APPLICABLE": "NEUTRAL" }[o] || "NEUTRAL", o === "RECOVERING" ? "verifying" : o);
+
+  /* ================================================== 1 · what failed */
+  function nowHtml(s) {
+    const act = s.status.active, K = s.kernel || {};
+    if (!act.length) return `<div class="ok-line"><span class="okdot"></span><b>Nothing is failing now.</b> <span class="muted">Below: the most recent incident of this session.</span></div>`;
+    const prim = s.status.primary.map(p => p.rule);
+    return `<ul class="fail-list">${act.map(a => `<li class="${prim.includes(a.rule) ? "prim" : ""}">${LAB.pill(a.level === "OK" ? "HEALTHY" : a.level === "CRITICAL" ? "FAILED" : a.level, a.level)}
+        <div><b>${esc(a.name)}</b> ${prim.includes(a.rule) ? '<span class="prov inferred" title="Attributed from the model\'s contribution shares">primary</span>' : a.by ? `<span class="small muted">← caused by ${esc(RULES[a.by].name)}</span>` : ""}
+        <div class="small muted">${esc((a.evidence || [])[0] || "")}</div></div></li>`).join("")}</ul>
+      ${K.down ? '<div class="small">The kernel is down: no strategy can run until the reboot completes — follow it in <a href="/kernel">Labs → Kernel panic</a>.</div>'
+        : '<div class="small muted">Fix the <b>primary</b> failure first: secondary failures are consequences and often clear by themselves.</div>'}`;
+  }
+
+  /* ================================================== 2 · why (root-cause analysis of an episode) */
+  const want = {{ rid if rid else 'null' }};
+  let runs = [], runEps = {}, choice = null, lastKey = "";
+  async function loadRuns() {
+    try { runs = await OS.api("/api/lab/runs"); } catch (e) { runs = []; }
+    if (want && !runEps[want]) { try { runEps[want] = (await OS.api("/api/lab/runs/" + want)).episodes || []; } catch (e) {} }
+  }
+  await loadRuns();
+  function options(s) {
+    const o = [];
+    if (s.current_episode) o.push(["live", `Live · #${s.current_episode.id} (in progress)`]);
+    (s.episodes || []).slice().reverse().forEach(e => o.push(["s" + e.id, `#${e.id} · ${e.rca.primary.name || "?"} · ${e.peak_name}`]));
+    runs.forEach(r => (r.summary.episodes ? o.push(["r" + r.id, `Run #${r.id} · ${r.name} · ${r.primary_failure || "no failure"}`]) : null));
+    return o;
+  }
+  async function episodeFor(k, s) {
+    if (k === "live") return s.current_episode;
+    if (k[0] === "s") return (s.episodes || []).find(e => "s" + e.id === k);
+    const id = Number(k.slice(1));
+    if (!runEps[id]) runEps[id] = (await OS.api("/api/lab/runs/" + id)).episodes || [];
+    return runEps[id].slice().sort((a, b) => b.peak - a.peak)[0];
+  }
+  $("pick").addEventListener("change", () => { choice = $("pick").value; lastKey = ""; renderWhy(LAB.st, true); });
+  let lastLive = null;
+  async function renderWhy(s, force) {
+    const o = options(s);
+    const keys = o.map(x => x[0]).join();
+    if ($("pick").dataset.k !== keys) { $("pick").innerHTML = o.map(([k, n]) => `<option value="${k}">${esc(n)}</option>`).join(""); $("pick").dataset.k = keys; }
+    $("pickWrap").hidden = o.length < 2;
+    if (!o.length) return false;
+    const liveId = s.current_episode ? s.current_episode.id : null;
+    if (liveId !== lastLive) { lastLive = liveId; if (liveId) choice = "live"; }       // a new failure takes over
+    if (!choice || !o.some(x => x[0] === choice)) choice = want ? "r" + want : o[0][0];
+    if (choice === "r" + want && !o.some(x => x[0] === choice)) choice = o[0][0];
+    $("pick").value = choice;
+    const ep = await episodeFor(choice, s);
+    if (!ep) return true;
+    const key = choice + ":" + (ep.rca ? JSON.stringify(ep.rca.timing) + ep.rca.secondary.length + ep.peak : "");
+    if (force || key !== lastKey) { lastKey = key; $("report").innerHTML = LAB.renderRCA(ep, { compact: true }); }
+    return true;
+  }
+
+  /* ================================================== 3 · fix */
+  let applying = false;
+  async function applyS(id) {
+    if (applying) return; applying = true;
+    try { const r = await LAB.post("/api/lab/strategy", { id }); LAB.toast(r.result); $("s-ver").scrollIntoView({ behavior: "smooth", block: "start" }); }
+    catch (e) {} finally { applying = false; }
+  }
+  $("strats").addEventListener("click", e => {
+    const b = e.target.closest("button[data-s]"); if (b) applyS(b.dataset.s);
+    const f = e.target.closest("button[data-full]"); if (f) LAB.post("/api/lab/reset").then(r => LAB.toast(r.result));
+  });
+  function stratsHtml(s) {
+    const act = s.status.active.map(a => a.rule).filter(r => r !== "kernel");
+    const prim = s.status.primary.map(p => p.rule).filter(r => r !== "kernel");
+    const rules = [...new Set(prim.concat(act))];
+    if ((s.kernel || {}).down) return '<div class="small muted">Nothing can be applied while the kernel is down — the reboot is the recovery.</div>';
+    if (!rules.length) return '<div class="small muted">Nothing to fix right now.</div>';
+    return rules.map(r => {
+      const ids = M.strategies.filter(x => x.rule === r).map(x => x.id).concat((RELATED[r] || []).filter(i => STR[i].rule !== r));
+      return `<div class="strat-group"><div class="sg-h">${esc(RULES[r].name)} ${prim.includes(r) ? '<span class="prov inferred">primary</span>' : '<span class="prov">secondary</span>'}</div>
+        <div class="strat-cards">${ids.map(i => card(STR[i], s)).join("")}</div></div>`;
+    }).join("") + `<div class="strat-full"><button type="button" class="link-btn" data-full="1">Full recovery — remove every cause at once</button><span class="small muted">resets everything; it does not show which action fixed what</span></div>`;
+  }
+  /* a strategy that cannot change anything right now is shown, but disabled with the reason */
+  function notApplicable(id, s) {
+    const P = s.processes || [], C = s.controls, D = k => (LAB.spec[k] || {}).default;
+    const alive = p => !["TERMINATED", "RESTARTING"].includes(p.state);
+    switch (id) {
+      case "cpu_reduce": return C.cpu_workload <= D("cpu_workload") ? "CPU workload is already at its normal level" : null;
+      case "cpu_kill_batch": return P.filter(p => ["batch", "custom_cpu"].includes(p.kind) && alive(p)).length <= Math.max(1, Math.floor(M.server.vcpus / 2)) ? "No extra CPU-bound jobs to terminate" : null;
+      case "cpu_renice": return C.web_nice <= -10 ? "The web service already has nice −10" : null;
+      case "mem_release": return C.mem_demand <= 0 ? "No extra memory is allocated" : null;
+      case "mem_kill_largest": return P.some(p => alive(p) && !p.critical && (p.mem_mb || 0) > 0) ? null : "No non-critical process holds memory";
+      case "mem_restart_leak": return P.some(p => p.kind === "custom_leak" && alive(p)) ? null : "No leaking process";
+      case "disk_reduce": return C.disk_read + C.disk_write <= 0 && !P.some(p => p.kind === "custom_io" && alive(p)) ? "No background I/O to reduce" : null;
+      case "net_restore": return C.net_delay <= 0 && C.net_loss <= 0 && C.conn_fail <= 0 ? "No injected network fault" : null;
+      case "net_timeout": return C.timeout_ms >= 5000 ? "The client timeout is already 5 s" : null;
+      case "proc_kill_hung": return P.some(p => p.state === "HUNG") ? null : "No unresponsive (HUNG) process";
+      case "proc_restart": return P.some(p => p.state === "TERMINATED" && ["master", "worker", "db", "agent"].includes(p.kind)) ? null : "No terminated service process";
+      case "svc_shed": return C.req_rate <= D("req_rate") ? "Client traffic is already at its normal rate" : null;
+      case "space_stop_writer": return P.some(p => p.kind === "custom_logflood" && alive(p)) ? null : "No process is writing log files";
+      case "space_delete_logs": { const d = s.disk_space || {}; return (d.deletable_pct || 0) + (d.held_open_pct || 0) > 0 ? null : "No log files written by created processes"; }
+      case "space_cleanup": { const d = s.disk_space || {}; return P.some(p => p.kind === "custom_logflood" && alive(p)) || (d.deletable_pct || 0) > 0 ? null : "No log writer and no log files to delete"; }
+      case "dl_kill": case "dl_preempt": return s.deadlock && s.deadlock.analysis.deadlocked.length ? null : "No deadlock detected";
+    }
+    return null;
+  }
+  const card = (x, s) => { const na = notApplicable(x.id, s);
+    return `<div class="scard${na ? " na" : ""}"><div class="sc-top"><b>${esc(x.name)}</b><span class="cat">${esc(x.category)}</span></div>
+      <div class="small">${esc(x.does)}</div><div class="small muted">When: ${esc(x.when)}</div>
+      <button type="button" class="btn btn-primary btn-sm" data-s="${x.id}" ${na ? "disabled" : ""}>Apply</button>${na ? `<div class="small na-why">Not applicable now: ${esc(na)}</div>` : ""}</div>`; };
+
+  /* ================================================== 4 · did it work? */
+  function resultHtml(s) {
+    const r = s.last_recovery;
+    if (!r) return '<div class="small muted">Apply a strategy — its verdict appears here, decided by the detector.</div>';
+    const st = r.status, B = r.before, A = r.after;
+    const name = r.strategy ? r.strategy.name : "Full recovery";
+    const keys = [["cpu_util", "CPU"], ["mem_util", "Memory"], ["disk_used", "File system"], ["run_queue", "Run queue"], ["io_queue", "I/O queue"], ["response_ms", "Response"], ["error_rate", "Errors"]];
+    const live = A ? A.values : s.values;
+    const rows = keys.filter(([k]) => B.values[k] != null).map(([k, n]) => `<tr><td>${n}</td><td class="mono">${LAB.fmt(k, B.values[k])}</td><td class="mono">${LAB.fmt(k, live[k])}${A ? "" : ' <span class="muted small">now</span>'}</td></tr>`).join("");
+    return `<div class="res-grid"><div>
+        <div class="res-head">${outcomePill(st)}<div><b>${esc(name)}</b>${r.target_name ? `<div class="small muted">target: ${esc(r.target_name)}${r.target_active ? "" : " (was not active when applied)"}</div>` : ""}</div></div>
+        <div class="ex-h" style="margin-top:12px">What it did</div><ul class="clean small">${(r.actions || []).map(a => `<li>${esc(a)}</li>`).join("")}</ul>
+        ${(r.side_effects || []).length ? `<div class="ex-h">Side effects</div><ul class="clean small side">${r.side_effects.map(a => `<li>${esc(a)}</li>`).join("")}</ul>` : ""}
+        ${r.checks && r.checks.length ? `<ul class="vchecks">${r.checks.map(c => `<li class="${c.ok ? "ok" : "bad"}"><span class="ck">${c.ok ? "✓" : "✗"}</span><div><b>${esc(c.label)}</b><div class="small muted">${esc(c.detail)}</div></div></li>`).join("")}</ul>`
+          : '<div class="state-box small"><span class="spinner"></span>Verifying on every sample…</div>'}</div>
+      <div class="tbl-wrap"><table class="data compact"><thead><tr><th>Metric</th><th>Before</th><th>${A ? "After" : "Now"}</th></tr></thead><tbody>
+        <tr><td>Status</td><td>${LAB.pill(B.health, B.health)}</td><td>${LAB.pill(A ? A.health : s.health, A ? A.health : s.health)}</td></tr>${rows}</tbody></table></div></div>`;
+  }
+
+  $("btnClean").addEventListener("click", () => LAB.post("/api/lab/clean").then(() => LAB.toast("Server reset to its healthy starting state")));
+
+  /* ================================================== compare (headless, does not touch the live server) */
+  $("cScen").innerHTML = M.scenarios.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join("");
+  const sel = new Set();
+  function stratChips() {
+    const sc = M.scenarios.find(x => x.id === $("cScen").value);
+    const ids = M.strategies.filter(x => x.rule === sc.rule).map(x => x.id).concat((RELATED[sc.rule] || []).filter(i => STR[i].rule !== sc.rule));
+    sel.clear(); ids.slice(0, 4).forEach(i => sel.add(i));
+    $("cStrats").innerHTML = ids.map(i => `<button type="button" data-c="${i}" class="${sel.has(i) ? "sel" : ""}" aria-pressed="${sel.has(i)}">${esc(STR[i].name)}</button>`).join("");
+  }
+  $("cScen").addEventListener("change", stratChips); stratChips();
+  $("cStrats").addEventListener("click", e => { const b = e.target.closest("button[data-c]"); if (!b) return; const i = b.dataset.c; if (sel.has(i)) sel.delete(i); else if (sel.size < 4) sel.add(i); b.classList.toggle("sel", sel.has(i)); b.setAttribute("aria-pressed", sel.has(i)); });
+  let cmpChart = null;
+  $("fCmp").addEventListener("submit", async e => {
+    e.preventDefault();
+    $("btnCmp").disabled = true; $("cmp").innerHTML = '<div class="state-box"><span class="spinner"></span>Running the simulations…</div>';
+    try { const r = await LAB.post("/api/lab/compare", { scenario: $("cScen").value, strategies: [...sel] }); showCmp(r.result); loadPrev(); }
+    catch (err) { $("cmp").innerHTML = `<div class="bad small">${esc(err.message)}</div>`; }
+    finally { $("btnCmp").disabled = false; }
+  });
+  function showCmp(c) {
+    const key = KEY[c.scenario.rule] || "error_rate";
+    const secs = v => (v == null ? "—" : `${Number(v).toFixed(1)} s`);
+    const rows = c.runs.map(r => `<tr class="${r.strategy === c.best ? "best" : ""}"><td><b>${esc(r.name)}</b>${r.strategy === c.best ? ' <span class="prov confirmed">best</span>' : ""}<span class="sub">${esc(r.category)}</span></td>
+      <td>${outcomePill(r.outcome)}${r.error ? `<span class="sub">${esc(r.error)}</span>` : ""}</td>
+      <td class="mono">${secs(r.target_ok_after)}</td><td class="mono">${secs(r.healthy_after)}</td>
+      <td class="mono">${r.before ? LAB.fmt(key, r.before[key]) : "—"} → ${LAB.fmt(key, r.after[key])}</td>
+      <td class="small">${(r.side_effects || []).map(esc).join("<br>") || "—"}</td></tr>`).join("");
+    $("cmp").innerHTML = `<div class="cmp-head"><b>${esc(c.scenario.name)}</b> <span class="muted small">· target: ${esc(c.rule_name)} · seed ${c.seed}</span></div>
+      <div class="tbl-wrap"><table class="data compact cmp"><thead><tr><th>Strategy</th><th>Outcome</th><th>Target cleared after</th><th>Healthy after</th><th>${esc(LAB.label(key))}: before → after</th><th>Side effects</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="chart-box cmp-chart"><canvas id="cmpChart" aria-label="Comparison chart"></canvas></div>
+      <p class="small muted">${esc(c.note)}</p>`;
+    const cols = LAB.COLORS.concat(["#475467"]);
+    if (cmpChart) cmpChart.destroy();
+    cmpChart = new Chart($("cmpChart"), { type: "line",
+      data: { datasets: c.runs.filter(r => !r.error).map((r, i) => ({ label: r.name, data: r.series.map(p => ({ x: p.t, y: p[key] })), borderColor: cols[i], borderWidth: 1.8, pointRadius: 0, tension: .2 })) },
+      options: { animation: false, maintainAspectRatio: false, parsing: false, interaction: { mode: "nearest", axis: "x", intersect: false },
+        plugins: { legend: { position: "bottom", labels: { boxWidth: 10, boxHeight: 2, font: { size: 11 } } }, labOverlay: { on: true, thresholds: LAB.thLines(key), marks: [], samples: [] } },
+        scales: { x: { type: "linear", title: { display: true, text: "simulated time (s)", font: { size: 11 } }, grid: { color: "#f0f2f5" }, ticks: { color: "#98a2b3", font: { size: 10 } } },
+          y: { beginAtZero: true, suggestedMax: LAB.suggestedMax(key, [key]), grid: { color: "#f0f2f5" }, ticks: { color: "#687385", font: { size: 10 }, callback: v => LAB.num(v) } } } },
+      plugins: [{ id: "applyLine", afterDatasetsDraw(ch) { const x = ch.scales.x.getPixelForValue(c.runs[0].apply_at), A = ch.chartArea, g = ch.ctx; g.save(); g.strokeStyle = "#2667c9"; g.setLineDash([4, 4]); g.beginPath(); g.moveTo(x, A.top); g.lineTo(x, A.bottom); g.stroke(); g.fillStyle = "#2667c9"; g.font = "600 10px system-ui"; g.fillText("strategy applied", x + 4, A.top + 10); g.restore(); } }] });
+  }
+  async function loadPrev() {
+    let rs = [];
+    try { rs = await OS.api("/api/lab/records?kind=comparison"); } catch (e) { /* offline */ }
+    $("prev").innerHTML = rs.length ? `<div class="tbl-wrap"><table class="data compact"><thead><tr><th>#</th><th>When</th><th>Scenario</th><th>Outcomes</th><th></th></tr></thead><tbody>${rs.slice(0, 8).map(r => `<tr><td class="mono">${r.id}</td><td class="mono small">${esc(r.created)}</td><td>${esc(r.summary.scenario)}</td>
+      <td class="small">${Object.entries(r.summary.outcomes).map(([k, o]) => `${esc(STR[k] ? STR[k].name : k)}: <b>${esc(o)}</b>`).join(" · ")}</td><td><button type="button" class="btn btn-ghost btn-xs" data-open="${r.id}">Show</button></td></tr>`).join("")}</tbody></table></div>`
+      : '<div class="small muted">No comparisons yet.</div>';
+  }
+  $("prev").addEventListener("click", async e => { const b = e.target.closest("button[data-open]"); if (!b) return; const r = await OS.api("/api/lab/records/" + b.dataset.open); showCmp(r.data); $("cmp").scrollIntoView({ behavior: "smooth", block: "start" }); });
+  $("cmpBox").addEventListener("toggle", () => { if ($("cmpBox").open) loadPrev(); });
+  if (location.hash === "#compare") $("cmpBox").open = true;
+
+  /* ================================================== render loop */
+  let sigS = "", n = 0, scrolled = false;
+  LAB.onState(async s => {
+    $("hPill").innerHTML = LAB.pill(s.health, s.health);
+    const any = s.status.active.length || s.current_episode || (s.episodes || []).length || s.last_recovery || want
+      || runs.some(r => r.summary.episodes);
+    $("calm").hidden = !!any; $("flow").hidden = !any;
+    if (!any) return;
+    LAB.setHTML($("now"), nowHtml(s));
+    $("nowAside").textContent = s.status.active.length ? `${s.status.active.length} active` : "";
+    const has = await renderWhy(s);
+    $("s-why").hidden = !has;
+    const sig = s.status.active.map(a => a.rule).join() + "|" + s.status.primary.map(a => a.rule).join() + "|" + ((s.kernel || {}).down ? 1 : 0) + "|" + M.strategies.map(x => notApplicable(x.id, s) ? 0 : 1).join("");
+    if (sig !== sigS && !$("strats").matches(":hover")) { $("strats").innerHTML = stratsHtml(s); sigS = sig; }
+    LAB.setHTML($("result"), resultHtml(s));
+    $("resAside").innerHTML = s.last_recovery ? outcomePill(s.last_recovery.status) : "";
+    if (!scrolled && location.hash === "#fix") { scrolled = true; setTimeout(() => $("fix").scrollIntoView({ block: "start" }), 50); }
+    if (++n % 20 === 0) loadRuns();
+  });
+  LAB.start({ interval: 1000 });
+})();
+</script>
+{% endblock %}

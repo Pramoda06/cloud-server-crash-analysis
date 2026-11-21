@@ -1,0 +1,2217 @@
+[
+ {
+  "bug_id": "e54a57373243dd6bf92e8de0d94ae6e52569da59",
+  "title": "possible deadlock in __alloc_workqueue",
+  "category": "lock",
+  "category_name": "Lock ordering and lock misuse",
+  "matched_categories": [
+   "lock"
+  ],
+  "subsystem": "drivers/block",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-09-14",
+  "fix_date": "2025-09-15",
+  "days_to_fix": 1,
+  "call_trace_functions": [
+   "__mutex_lock",
+   "__alloc_workqueue",
+   "alloc_workqueue_noprof",
+   "padata_alloc",
+   "pcrypt_init_padata",
+   "pcrypt_init"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "9f7c02e031570e8291a63162c6c046dc15ff85b0",
+   "title": "nbd: restrict sockets to TCP and UDP",
+   "fixes": [
+    {
+     "hash": "cf1b2326b734",
+     "title": "nbd: verify socket is supported during setup"
+    }
+   ],
+   "files": [
+    {
+     "path": "drivers/block/nbd.c",
+     "added": 8,
+     "removed": 0
+    }
+   ],
+   "functions": [
+    "nbd_get_socket"
+   ],
+   "lines_changed": 8,
+   "diff_excerpt": "@@ -1217,6 +1217,14 @@ static struct socket *nbd_get_socket(struct nbd_device *nbd, unsigned long fd,\n \tif (!sock)\n \t\treturn NULL;\n \n+\tif (!sk_is_tcp(sock->sk) &&\n+\t    !sk_is_stream_unix(sock->sk)) {\n+\t\tdev_err(disk_to_dev(nbd->disk), \"Unsupported socket: should be TCP or UNIX.\\n\");\n+\t\t*err = -EINVAL;\n+\t\tsockfd_put(sock);\n+\t\treturn NULL;\n+\t}\n+\n \tif (sock->ops->shutdown == sock_no_shutdown) {\n \t\tdev_err(disk_to_dev(nbd->disk), \"Unsupported socket: shutdown callout must be supported.\\n\");\n \t\t*err = -EINVAL;\n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 19
+  },
+  "num_patch_versions": 1,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?id=e54a57373243dd6bf92e8de0d94ae6e52569da59",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=9f7c02e031570e8291a63162c6c046dc15ff85b0"
+  }
+ },
+ {
+  "bug_id": "cef594105ac7e60c6d93",
+  "title": "WARNING: locking bug in vgic_put_irq",
+  "category": "lock",
+  "category_name": "Lock ordering and lock misuse",
+  "matched_categories": [
+   "lock",
+   "assert"
+  ],
+  "subsystem": "arch/arm64",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-08-25",
+  "fix_date": "2025-09-18",
+  "days_to_fix": 24,
+  "call_trace_functions": [
+   "_raw_spin_lock_irqsave",
+   "vgic_put_irq",
+   "vgic_flush_pending_lpis",
+   "__kvm_vgic_vcpu_destroy",
+   "kvm_vgic_destroy",
+   "kvm_arch_destroy_vm"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "d54594accf732d17891d276aa1f545ef25606555",
+   "title": "KVM: arm64: vgic-v3: Erase LPIs from xarray outside of raw spinlocks",
+   "fixes": [],
+   "files": [
+    {
+     "path": "arch/arm64/kvm/vgic/vgic.c",
+     "added": 37,
+     "removed": 4
+    },
+    {
+     "path": "include/kvm/arm_vgic.h",
+     "added": 3,
+     "removed": 0
+    }
+   ],
+   "functions": [
+    "__vgic_put_irq",
+    "vgic_put_irq",
+    "vgic_flush_pending_lpis",
+    "vgic_prune_ap_list"
+   ],
+   "lines_changed": 44,
+   "diff_excerpt": "@@ -28,8 +28,8 @@ struct vgic_global kvm_vgic_global_state __ro_after_init = {\n  *     kvm->arch.config_lock (mutex)\n  *       its->cmd_lock (mutex)\n  *         its->its_lock (mutex)\n- *           vgic_cpu->ap_list_lock\t\tmust be taken with IRQs disabled\n- *             vgic_dist->lpi_xa.xa_lock\tmust be taken with IRQs disabled\n+ *           vgic_dist->lpi_xa.xa_lock\t\tmust be taken with IRQs disabled\n+ *             vgic_cpu->ap_list_lock\t\tmust be taken with IRQs disabled\n  *               vgic_irq->irq_lock\t\tmust be taken with IRQs disabled\n  *\n  * As the ap_list_lock might be taken from the timer interrupt handler,\n@@ -129,6 +129,15 @@ static __must_check bool __vgic_put_irq(struct kvm *kvm, struct vgic_irq *irq)\n \treturn refcount_dec_and_test(&irq->refcount);\n }\n \n+static __must_check bool vgic_put_irq_norelease(struct kvm *kvm, struct vgic_irq *irq)\n+{\n+\tif (!__vgic_put_irq(kvm, irq))\n+\t\treturn false;\n+\n+\tirq->pending_release = true;\n+\treturn true;\n+}\n+\n void vgic_put_irq(struct kvm *kvm, struct vgic_irq *irq)\n {\n \tstruct vgic_dist *dist = &kvm->arch.vgic;\n@@ -142,10 +151,27 @@ void vgic_put_irq(struct kvm *kvm, struct vgic_irq *irq)\n \txa_unlock_irqrestore(&dist->lpi_xa, flags);\n }\n[… excerpt truncated — full change at the source link]",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 0,
+  "has_discussion": false,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=cef594105ac7e60c6d93",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=d54594accf732d17891d276aa1f545ef25606555"
+  }
+ },
+ {
+  "bug_id": "d38b792a5cbd941006fc",
+  "title": "possible deadlock in writeout_period",
+  "category": "lock",
+  "category_name": "Lock ordering and lock misuse",
+  "matched_categories": [
+   "lock"
+  ],
+  "subsystem": "lib",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2026-02-05",
+  "fix_date": "2026-02-09",
+  "days_to_fix": 4,
+  "call_trace_functions": [
+   "_raw_spin_lock_irqsave",
+   "__folio_end_writeback",
+   "folio_end_writeback_no_dropbehind",
+   "folio_end_writeback",
+   "end_buffer_async_write",
+   "end_bio_bh_io_sync"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "dd9e2f5b38f1fdd49b1ab6d3a85f81c14369eacc",
+   "title": "flex_proportions: make fprop_new_period() hardirq safe",
+   "fixes": [
+    {
+     "hash": "a91befde3503",
+     "title": "lib/flex_proportions.c: remove local_irq_ops in fprop_new_period()"
+    }
+   ],
+   "files": [
+    {
+     "path": "lib/flex_proportions.c",
+     "added": 3,
+     "removed": 2
+    }
+   ],
+   "functions": [
+    "fprop_global_destroy",
+    "fprop_new_period"
+   ],
+   "lines_changed": 5,
+   "diff_excerpt": "@@ -64,13 +64,14 @@ void fprop_global_destroy(struct fprop_global *p)\n bool fprop_new_period(struct fprop_global *p, int periods)\n {\n \ts64 events = percpu_counter_sum(&p->events);\n+\tunsigned long flags;\n \n \t/*\n \t * Don't do anything if there are no events.\n \t */\n \tif (events <= 1)\n \t\treturn false;\n-\tpreempt_disable_nested();\n+\tlocal_irq_save(flags);\n \twrite_seqcount_begin(&p->sequence);\n \tif (periods < 64)\n \t\tevents -= events >> periods;\n@@ -78,7 +79,7 @@ bool fprop_new_period(struct fprop_global *p, int periods)\n \tpercpu_counter_add(&p->events, -events);\n \tp->period += periods;\n \twrite_seqcount_end(&p->sequence);\n-\tpreempt_enable_nested();\n+\tlocal_irq_restore(flags);\n \n \treturn true;\n }\n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 0,
+  "has_discussion": false,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=d38b792a5cbd941006fc",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=dd9e2f5b38f1fdd49b1ab6d3a85f81c14369eacc"
+  }
+ },
+ {
+  "bug_id": "6e493c165d26d6fcbf72",
+  "title": "possible deadlock in dqget",
+  "category": "lock",
+  "category_name": "Lock ordering and lock misuse",
+  "matched_categories": [
+   "lock"
+  ],
+  "subsystem": "fs/jbd2",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2024-09-26",
+  "fix_date": "2025-11-19",
+  "days_to_fix": 419,
+  "call_trace_functions": [
+   "down_write",
+   "ext4_xattr_set_handle",
+   "ext4_initxattrs",
+   "security_inode_init_security",
+   "__ext4_new_inode",
+   "ext4_create"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "524c3853831cf4f7e1db579e487c757c3065165c",
+   "title": "jbd2: use a per-journal lock_class_key for jbd2_trans_commit_key",
+   "fixes": [],
+   "files": [
+    {
+     "path": "fs/jbd2/journal.c",
+     "added": 4,
+     "removed": 2
+    },
+    {
+     "path": "include/linux/jbd2.h",
+     "added": 6,
+     "removed": 0
+    }
+   ],
+   "functions": [
+    "journal_init_common",
+    "jbd2_journal_destroy"
+   ],
+   "lines_changed": 12,
+   "diff_excerpt": "@@ -1521,7 +1521,6 @@ static journal_t *journal_init_common(struct block_device *bdev,\n \t\t\tstruct block_device *fs_dev,\n \t\t\tunsigned long long start, int len, int blocksize)\n {\n-\tstatic struct lock_class_key jbd2_trans_commit_key;\n \tjournal_t *journal;\n \tint err;\n \tint n;\n@@ -1530,6 +1529,7 @@ static journal_t *journal_init_common(struct block_device *bdev,\n \tif (!journal)\n \t\treturn ERR_PTR(-ENOMEM);\n \n+\tlockdep_register_key(&journal->jbd2_trans_commit_key);\n \tjournal->j_blocksize = blocksize;\n \tjournal->j_dev = bdev;\n \tjournal->j_fs_dev = fs_dev;\n@@ -1560,7 +1560,7 @@ static journal_t *journal_init_common(struct block_device *bdev,\n \tjournal->j_max_batch_time = 15000; /* 15ms */\n \tatomic_set(&journal->j_reserved_credits, 0);\n \tlockdep_init_map(&journal->j_trans_commit_map, \"jbd2_handle\",\n-\t\t\t &jbd2_trans_commit_key, 0);\n+\t\t\t &journal->jbd2_trans_commit_key, 0);\n \n \t/* The journal is marked for error until we succeed with recovery! */\n \tjournal->j_flags = JBD2_ABORT;\n@@ -1611,6 +1611,7 @@ static journal_t *journal_init_common(struct block_device *bdev,\n \tkfree(journal->j_wbuf);\n \tjbd2_journal_destroy_revoke(journal);\n \tjournal_fail_superblock(journal);\n+\tlockdep_unregister_key(&journal->jbd2_trans_commit_key);\n[… excerpt truncated — full change at the source link]",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 2,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=6e493c165d26d6fcbf72",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=524c3853831cf4f7e1db579e487c757c3065165c"
+  }
+ },
+ {
+  "bug_id": "c9ab1eb0f8f5ab1f18be",
+  "title": "possible deadlock in snd_pcm_drop",
+  "category": "lock",
+  "category_name": "Lock ordering and lock misuse",
+  "matched_categories": [
+   "lock"
+  ],
+  "subsystem": "sound/core",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-09-26",
+  "fix_date": "2025-10-15",
+  "days_to_fix": 19,
+  "call_trace_functions": [
+   "rt_spin_lock",
+   "_snd_pcm_stream_lock_irqsave",
+   "snd_pcm_period_elapsed",
+   "dummy_hrtimer_callback",
+   "__hrtimer_run_queues",
+   "hrtimer_run_softirq"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "9fc4a3da9a0259a0500848b5d8657918efde176b",
+   "title": "ALSA: pcm: Disable bottom softirqs as part of spin_lock_irq() on PREEMPT_RT",
+   "fixes": [
+    {
+     "hash": "d2d6422f8bd1",
+     "title": "x86: Allow to enable PREEMPT_RT."
+    }
+   ],
+   "files": [
+    {
+     "path": "sound/core/pcm_native.c",
+     "added": 15,
+     "removed": 10
+    }
+   ],
+   "functions": [
+    "snd_pcm_group_init"
+   ],
+   "lines_changed": 25,
+   "diff_excerpt": "@@ -84,19 +84,24 @@ void snd_pcm_group_init(struct snd_pcm_group *group)\n }\n \n /* define group lock helpers */\n-#define DEFINE_PCM_GROUP_LOCK(action, mutex_action) \\\n+#define DEFINE_PCM_GROUP_LOCK(action, bh_lock, bh_unlock, mutex_action) \\\n static void snd_pcm_group_ ## action(struct snd_pcm_group *group, bool nonatomic) \\\n { \\\n-\tif (nonatomic) \\\n+\tif (nonatomic) { \\\n \t\tmutex_ ## mutex_action(&group->mutex); \\\n-\telse \\\n-\t\tspin_ ## action(&group->lock); \\\n-}\n-\n-DEFINE_PCM_GROUP_LOCK(lock, lock);\n-DEFINE_PCM_GROUP_LOCK(unlock, unlock);\n-DEFINE_PCM_GROUP_LOCK(lock_irq, lock);\n-DEFINE_PCM_GROUP_LOCK(unlock_irq, unlock);\n+\t} else { \\\n+\t\tif (IS_ENABLED(CONFIG_PREEMPT_RT) && bh_lock)   \\\n+\t\t\tlocal_bh_disable();\t\t\t\\\n+\t\tspin_ ## action(&group->lock);\t\t\t\\\n+\t\tif (IS_ENABLED(CONFIG_PREEMPT_RT) && bh_unlock) \\\n+\t\t\tlocal_bh_enable();                      \\\n+\t}\t\t\t\t\t\t\t\\\n+}\n+\n+DEFINE_PCM_GROUP_LOCK(lock, false, false, lock);\n+DEFINE_PCM_GROUP_LOCK(unlock, false, false, unlock);\n[… excerpt truncated — full change at the source link]",
+   "bugs_in_shard": 2
+  },
+  "num_patch_versions": 0,
+  "has_discussion": false,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=c9ab1eb0f8f5ab1f18be",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=9fc4a3da9a0259a0500848b5d8657918efde176b"
+  }
+ },
+ {
+  "bug_id": "8259e1d0e3ae8ed0c490",
+  "title": "WARNING: locking bug in __set_page_owner (2)",
+  "category": "lock",
+  "category_name": "Lock ordering and lock misuse",
+  "matched_categories": [
+   "lock",
+   "assert"
+  ],
+  "subsystem": "mm",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-10-09",
+  "fix_date": "2025-10-10",
+  "days_to_fix": 1,
+  "call_trace_functions": [
+   "_raw_spin_lock_irqsave",
+   "__set_page_owner",
+   "post_alloc_hook",
+   "get_page_from_freelist",
+   "alloc_frozen_pages_nolock_noprof",
+   "alloc_pages_nolock_noprof"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "c83aab85e18103a6dc066b4939e2c92a02bb1b05",
+   "title": "mm: don't spin in add_stack_record when gfp flags don't allow",
+   "fixes": [
+    {
+     "hash": "97769a53f117",
+     "title": "mm, bpf: Introduce try_alloc_pages() for opportunistic page allocation"
+    }
+   ],
+   "files": [
+    {
+     "path": "mm/page_owner.c",
+     "added": 3,
+     "removed": 0
+    }
+   ],
+   "functions": [
+    "add_stack_record_to_list"
+   ],
+   "lines_changed": 3,
+   "diff_excerpt": "@@ -168,6 +168,9 @@ static void add_stack_record_to_list(struct stack_record *stack_record,\n \tunsigned long flags;\n \tstruct stack *stack;\n \n+\tif (!gfpflags_allow_spinning(gfp_mask))\n+\t\treturn;\n+\n \tset_current_in_page_owner();\n \tstack = kmalloc(sizeof(*stack), gfp_nested_mask(gfp_mask));\n \tif (!stack) {\n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 2
+  },
+  "num_patch_versions": 0,
+  "has_discussion": false,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=8259e1d0e3ae8ed0c490",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=c83aab85e18103a6dc066b4939e2c92a02bb1b05"
+  }
+ },
+ {
+  "bug_id": "10a9b495f54a17b607a6",
+  "title": "INFO: task hung in io_uring_del_tctx_node (5)",
+  "category": "hang",
+  "category_name": "Hung tasks and stalls",
+  "matched_categories": [
+   "hang"
+  ],
+  "subsystem": "io_uring",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-06-23",
+  "fix_date": "2025-10-29",
+  "days_to_fix": 128,
+  "call_trace_functions": [
+   "__schedule",
+   "schedule",
+   "schedule_preempt_disabled",
+   "__mutex_lock",
+   "io_uring_del_tctx_node",
+   "io_uring_clean_tctx"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "101e596e7404d07a85b38358a392009503aad797",
+   "title": "io_uring/fdinfo: cap SQ iteration at max SQ entries",
+   "fixes": [
+    {
+     "hash": "1cba30bf9fdd",
+     "title": "io_uring: add support for IORING_SETUP_SQE_MIXED"
+    }
+   ],
+   "files": [
+    {
+     "path": "io_uring/fdinfo.c",
+     "added": 6,
+     "removed": 5
+    }
+   ],
+   "functions": [
+    "__io_uring_show_fdinfo"
+   ],
+   "lines_changed": 11,
+   "diff_excerpt": "@@ -67,6 +67,7 @@ static void __io_uring_show_fdinfo(struct io_ring_ctx *ctx, struct seq_file *m)\n \tunsigned int cq_head = READ_ONCE(r->cq.head);\n \tunsigned int cq_tail = READ_ONCE(r->cq.tail);\n \tunsigned int sq_shift = 0;\n+\tunsigned int sq_entries;\n \tint sq_pid = -1, sq_cpu = -1;\n \tu64 sq_total_time = 0, sq_work_time = 0;\n \tunsigned int i;\n@@ -89,17 +90,18 @@ static void __io_uring_show_fdinfo(struct io_ring_ctx *ctx, struct seq_file *m)\n \tseq_printf(m, \"CqTail:\\t%u\\n\", cq_tail);\n \tseq_printf(m, \"CachedCqTail:\\t%u\\n\", data_race(ctx->cached_cq_tail));\n \tseq_printf(m, \"SQEs:\\t%u\\n\", sq_tail - sq_head);\n-\twhile (sq_head < sq_tail) {\n+\tsq_entries = min(sq_tail - sq_head, ctx->sq_entries);\n+\tfor (i = 0; i < sq_entries; i++) {\n+\t\tunsigned int entry = i + sq_head;\n \t\tstruct io_uring_sqe *sqe;\n \t\tunsigned int sq_idx;\n \t\tbool sqe128 = false;\n \t\tu8 opcode;\n \n \t\tif (ctx->flags & IORING_SETUP_NO_SQARRAY)\n-\t\t\tsq_idx = sq_head & sq_mask;\n+\t\t\tsq_idx = entry & sq_mask;\n \t\telse\n-\t\t\tsq_idx = READ_ONCE(ctx->sq_array[sq_head & sq_mask]);\n-\n+\t\t\tsq_idx = READ_ONCE(ctx->sq_array[entry & sq_mask]);\n \t\tif (sq_idx > sq_mask)\n \t\t\tcontinue;\n[… excerpt truncated — full change at the source link]",
+   "bugs_in_shard": 2
+  },
+  "num_patch_versions": 1,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=10a9b495f54a17b607a6",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=101e596e7404d07a85b38358a392009503aad797"
+  }
+ },
+ {
+  "bug_id": "1a9af3ef3c84c5e14dcc",
+  "title": "INFO: task hung in erofs_bread",
+  "category": "hang",
+  "category_name": "Hung tasks and stalls",
+  "matched_categories": [
+   "hang"
+  ],
+  "subsystem": "fs/erofs",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-09-14",
+  "fix_date": "2025-09-17",
+  "days_to_fix": 3,
+  "call_trace_functions": [
+   "__schedule",
+   "schedule",
+   "io_schedule",
+   "folio_wait_bit_common",
+   "do_read_cache_folio",
+   "erofs_bread"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "334c0e493c2aa3e843a80bb9f3862bb50360cb36",
+   "title": "erofs: avoid reading more for fragment maps",
+   "fixes": [
+    {
+     "hash": "b44686c8391b",
+     "title": "erofs: fix large fragment handling"
+    },
+    {
+     "hash": "b15b2e307c3a",
+     "title": "erofs: support on-disk compressed fragments data"
+    }
+   ],
+   "files": [
+    {
+     "path": "fs/erofs/zdata.c",
+     "added": 2,
+     "removed": 2
+    }
+   ],
+   "functions": [
+    "z_erofs_pcluster_readmore"
+   ],
+   "lines_changed": 4,
+   "diff_excerpt": "@@ -1835,7 +1835,7 @@ static void z_erofs_pcluster_readmore(struct z_erofs_frontend *f,\n \t\tmap->m_la = end;\n \t\terr = z_erofs_map_blocks_iter(inode, map,\n \t\t\t\t\t      EROFS_GET_BLOCKS_READMORE);\n-\t\tif (err)\n+\t\tif (err || !(map->m_flags & EROFS_MAP_ENCODED))\n \t\t\treturn;\n \n \t\t/* expand ra for the trailing edge if readahead */\n@@ -1847,7 +1847,7 @@ static void z_erofs_pcluster_readmore(struct z_erofs_frontend *f,\n \t\tend = round_up(end, PAGE_SIZE);\n \t} else {\n \t\tend = round_up(map->m_la, PAGE_SIZE);\n-\t\tif (!map->m_llen)\n+\t\tif (!(map->m_flags & EROFS_MAP_ENCODED) || !map->m_llen)\n \t\t\treturn;\n \t}\n \n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 1,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=1a9af3ef3c84c5e14dcc",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=334c0e493c2aa3e843a80bb9f3862bb50360cb36"
+  }
+ },
+ {
+  "bug_id": "d630bd89141124cc543e",
+  "title": "INFO: task hung in hub_activate (3)",
+  "category": "hang",
+  "category_name": "Hung tasks and stalls",
+  "matched_categories": [
+   "hang"
+  ],
+  "subsystem": "drivers/usb",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-06-27",
+  "fix_date": "2025-07-03",
+  "days_to_fix": 6,
+  "call_trace_functions": [
+   "__schedule",
+   "schedule",
+   "schedule_preempt_disabled",
+   "__mutex_lock",
+   "hub_activate",
+   "process_scheduled_works"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "9bd9c8026341f75f25c53104eb7e656e357ca1a2",
+   "title": "usb: hub: Fix flushing of delayed work used for post resume purposes",
+   "fixes": [
+    {
+     "hash": "a49e1e2e785f",
+     "title": "usb: hub: Fix flushing and scheduling of delayed work that tunes runtime pm"
+    }
+   ],
+   "files": [
+    {
+     "path": "drivers/usb/core/hub.c",
+     "added": 8,
+     "removed": 13
+    },
+    {
+     "path": "drivers/usb/core/hub.h",
+     "added": 1,
+     "removed": 0
+    }
+   ],
+   "functions": [
+    "usb_remove_device",
+    "hub_activate",
+    "hub_init_func3",
+    "hub_quiesce",
+    "hub_probe"
+   ],
+   "lines_changed": 22,
+   "diff_excerpt": "@@ -1074,12 +1074,11 @@ int usb_remove_device(struct usb_device *udev)\n \n enum hub_activation_type {\n \tHUB_INIT, HUB_INIT2, HUB_INIT3,\t\t/* INITs must come first */\n-\tHUB_POST_RESET, HUB_RESUME, HUB_RESET_RESUME, HUB_POST_RESUME,\n+\tHUB_POST_RESET, HUB_RESUME, HUB_RESET_RESUME,\n };\n \n static void hub_init_func2(struct work_struct *ws);\n static void hub_init_func3(struct work_struct *ws);\n-static void hub_post_resume(struct work_struct *ws);\n \n static void hub_activate(struct usb_hub *hub, enum hub_activation_type type)\n {\n@@ -1103,12 +1102,6 @@ static void hub_activate(struct usb_hub *hub, enum hub_activation_type type)\n \t\tgoto init3;\n \t}\n \n-\tif (type == HUB_POST_RESUME) {\n-\t\tusb_autopm_put_interface_async(to_usb_interface(hub->intfdev));\n-\t\thub_put(hub);\n-\t\treturn;\n-\t}\n-\n \thub_get(hub);\n \n \t/* The superspeed hub except for root hub has to use Hub Depth\n@@ -1362,8 +1355,8 @@ static void hub_activate(struct usb_hub *hub, enum hub_activation_type type)\n \t\tusb_autopm_get_interface_no_resume(\n \t\t\tto_usb_interface(hub->intfdev));\n[… excerpt truncated — full change at the source link]",
+   "bugs_in_shard": 2
+  },
+  "num_patch_versions": 0,
+  "has_discussion": false,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=d630bd89141124cc543e",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=9bd9c8026341f75f25c53104eb7e656e357ca1a2"
+  }
+ },
+ {
+  "bug_id": "d1b5dace43896bc386c3",
+  "title": "INFO: task hung in v9fs_file_fsync",
+  "category": "hang",
+  "category_name": "Hung tasks and stalls",
+  "matched_categories": [
+   "hang"
+  ],
+  "subsystem": "net/9p",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-08-16",
+  "fix_date": "2025-09-19",
+  "days_to_fix": 34,
+  "call_trace_functions": [
+   "__schedule",
+   "schedule",
+   "io_schedule",
+   "folio_wait_bit_common",
+   "folio_wait_writeback",
+   "__filemap_fdatawait_range"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "e8fe3f07a357c39d429e02ca34f740692d88967a",
+   "title": "9p/trans_fd: p9_fd_request: kick rx thread if EPOLLIN",
+   "fixes": [],
+   "files": [
+    {
+     "path": "net/9p/trans_fd.c",
+     "added": 1,
+     "removed": 8
+    }
+   ],
+   "functions": [
+    "p9_poll_mux",
+    "p9_fd_request"
+   ],
+   "lines_changed": 9,
+   "diff_excerpt": "@@ -666,7 +666,6 @@ static void p9_poll_mux(struct p9_conn *m)\n \n static int p9_fd_request(struct p9_client *client, struct p9_req_t *req)\n {\n-\t__poll_t n;\n \tint err;\n \tstruct p9_trans_fd *ts = client->trans;\n \tstruct p9_conn *m = &ts->conn;\n@@ -686,13 +685,7 @@ static int p9_fd_request(struct p9_client *client, struct p9_req_t *req)\n \tlist_add_tail(&req->req_list, &m->unsent_req_list);\n \tspin_unlock(&m->req_lock);\n \n-\tif (test_and_clear_bit(Wpending, &m->wsched))\n-\t\tn = EPOLLOUT;\n-\telse\n-\t\tn = p9_fd_poll(m->client, NULL, NULL);\n-\n-\tif (n & EPOLLOUT && !test_and_set_bit(Wworksched, &m->wsched))\n-\t\tschedule_work(&m->wq);\n+\tp9_poll_mux(m);\n \n \treturn 0;\n }\n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 1,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=d1b5dace43896bc386c3",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=e8fe3f07a357c39d429e02ca34f740692d88967a"
+  }
+ },
+ {
+  "bug_id": "5af33dd272b913b65880",
+  "title": "INFO: task hung in ni_readpage_cmpr (3)",
+  "category": "hang",
+  "category_name": "Hung tasks and stalls",
+  "matched_categories": [
+   "hang"
+  ],
+  "subsystem": "fs/ntfs3",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-12-15",
+  "fix_date": "2026-01-05",
+  "days_to_fix": 21,
+  "call_trace_functions": [
+   "__schedule",
+   "schedule",
+   "io_schedule",
+   "folio_wait_bit_common",
+   "__filemap_get_folio_mpol",
+   "ntfs_lock_new_page"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "e37a75bb866c29da954b51d0dd7670406246d9ee",
+   "title": "fs/ntfs3: fix deadlock in ni_read_folio_cmpr",
+   "fixes": [
+    {
+     "hash": "f35590ee26f5",
+     "title": "fs/ntfs3: remove ntfs_bio_pages and use page cache for compressed I/O"
+    }
+   ],
+   "files": [
+    {
+     "path": "fs/ntfs3/frecord.c",
+     "added": 2,
+     "removed": 0
+    },
+    {
+     "path": "fs/ntfs3/inode.c",
+     "added": 1,
+     "removed": 2
+    }
+   ],
+   "functions": [
+    "ni_read_folio_cmpr",
+    "ntfs_read_folio"
+   ],
+   "lines_changed": 5,
+   "diff_excerpt": "@@ -2107,7 +2107,9 @@ int ni_read_folio_cmpr(struct ntfs_inode *ni, struct folio *folio)\n \t\tpages[i] = pg;\n \t}\n \n+\tni_lock(ni);\n \terr = ni_read_frame(ni, frame_vbo, pages, pages_per_frame, 0);\n+\tni_unlock(ni);\n \n out1:\n \tfor (i = 0; i < pages_per_frame; i++) {\ndiff --git a/fs/ntfs3/inode.c b/fs/ntfs3/inode.c\nindex ace9873adaaef1..4b50fdb4ff470e 100644\n--- a/fs/ntfs3/inode.c\n+++ b/fs/ntfs3/inode.c\n@@ -748,9 +748,8 @@ static int ntfs_read_folio(struct file *file, struct folio *folio)\n \t}\n \n \tif (is_compressed(ni)) {\n-\t\tni_lock(ni);\n+\t\t/* ni_lock is taken inside ni_read_folio_cmpr after page locks */\n \t\terr = ni_read_folio_cmpr(ni, folio);\n-\t\tni_unlock(ni);\n \t\treturn err;\n \t}\n \n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 1,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=5af33dd272b913b65880",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=e37a75bb866c29da954b51d0dd7670406246d9ee"
+  }
+ },
+ {
+  "bug_id": "4b12286339fe4c2700c1",
+  "title": "INFO: task hung in __bread_gfp (7)",
+  "category": "hang",
+  "category_name": "Hung tasks and stalls",
+  "matched_categories": [
+   "hang"
+  ],
+  "subsystem": "block",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-08-25",
+  "fix_date": "2025-09-23",
+  "days_to_fix": 29,
+  "call_trace_functions": [
+   "__schedule",
+   "schedule",
+   "io_schedule",
+   "bit_wait_io",
+   "__wait_on_bit",
+   "out_of_line_wait_on_bit"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "ab073abf6d974d3fe998fc6731ca80e2b57ffd69",
+   "title": "block: fix EOD return for device with nr_sectors == 0",
+   "fixes": [
+    {
+     "hash": "d0a2b527d8c3",
+     "title": "block: tone down bio_check_eod"
+    }
+   ],
+   "files": [
+    {
+     "path": "block/blk-core.c",
+     "added": 3,
+     "removed": 1
+    }
+   ],
+   "functions": [
+    "bio_check_eod"
+   ],
+   "lines_changed": 4,
+   "diff_excerpt": "@@ -557,9 +557,11 @@ static inline int bio_check_eod(struct bio *bio)\n \tsector_t maxsector = bdev_nr_sectors(bio->bi_bdev);\n \tunsigned int nr_sectors = bio_sectors(bio);\n \n-\tif (nr_sectors && maxsector &&\n+\tif (nr_sectors &&\n \t    (nr_sectors > maxsector ||\n \t     bio->bi_iter.bi_sector > maxsector - nr_sectors)) {\n+\t\tif (!maxsector)\n+\t\t\treturn -EIO;\n \t\tpr_info_ratelimited(\"%s: attempt to access beyond end of device\\n\"\n \t\t\t\t    \"%pg: rw=%d, sector=%llu, nr_sectors = %u limit=%llu\\n\",\n \t\t\t\t    current->comm, bio->bi_bdev, bio->bi_opf,\n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 1,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=4b12286339fe4c2700c1",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=ab073abf6d974d3fe998fc6731ca80e2b57ffd69"
+  }
+ },
+ {
+  "bug_id": "8dd915c7cb0490fc8c52",
+  "title": "memory leak in rtl8150_set_multicast",
+  "category": "leak",
+  "category_name": "Memory leaks",
+  "matched_categories": [
+   "leak"
+  ],
+  "subsystem": "drivers/net",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-12-12",
+  "fix_date": "2025-12-23",
+  "days_to_fix": 11,
+  "call_trace_functions": [
+   "__kmalloc_cache_noprof",
+   "rtl8150_set_multicast",
+   "__dev_set_rx_mode",
+   "__dev_open",
+   "__dev_change_flags",
+   "netif_change_flags"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "12cab1191d9890097171156d06bfa8d31f1e39c8",
+   "title": "net: usb: rtl8150: fix memory leak on usb_submit_urb() failure",
+   "fixes": [
+    {
+     "hash": "4d12997a9bb3",
+     "title": "drivers: net: usb: rtl8150: concurrent URB bugfix"
+    }
+   ],
+   "files": [
+    {
+     "path": "drivers/net/usb/rtl8150.c",
+     "added": 2,
+     "removed": 0
+    }
+   ],
+   "functions": [
+    "async_set_registers"
+   ],
+   "lines_changed": 2,
+   "diff_excerpt": "@@ -211,6 +211,8 @@ static int async_set_registers(rtl8150_t *dev, u16 indx, u16 size, u16 reg)\n \t\tif (res == -ENODEV)\n \t\t\tnetif_device_detach(dev->netdev);\n \t\tdev_err(&dev->udev->dev, \"%s failed with %d\\n\", __func__, res);\n+\t\tkfree(req);\n+\t\tusb_free_urb(async_urb);\n \t}\n \treturn res;\n }\n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 1,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=8dd915c7cb0490fc8c52",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=12cab1191d9890097171156d06bfa8d31f1e39c8"
+  }
+ },
+ {
+  "bug_id": "099461f8558eb0a1f4f3",
+  "title": "memory leak in prepare_creds (5)",
+  "category": "leak",
+  "category_name": "Memory leaks",
+  "matched_categories": [
+   "leak"
+  ],
+  "subsystem": "fs/nfsd",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-11-04",
+  "fix_date": "2025-12-19",
+  "days_to_fix": 45,
+  "call_trace_functions": [
+   "kmem_cache_alloc_noprof",
+   "prepare_creds",
+   "copy_creds",
+   "copy_process",
+   "kernel_clone",
+   "__do_sys_clone"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "df8d829bba3adcf3cc744c01d933b6fd7cf06e91",
+   "title": "nfsd: fix memory leak in nfsd_create_serv error paths",
+   "fixes": [
+    {
+     "hash": "47e988147f40",
+     "title": "nfsd: add nfsd_serv_try_get and nfsd_serv_put"
+    }
+   ],
+   "files": [
+    {
+     "path": "fs/nfsd/nfssvc.c",
+     "added": 4,
+     "removed": 1
+    }
+   ],
+   "functions": [
+    "nfsd_create_serv"
+   ],
+   "lines_changed": 5,
+   "diff_excerpt": "@@ -615,12 +615,15 @@ int nfsd_create_serv(struct net *net)\n \tserv = svc_create_pooled(nfsd_programs, ARRAY_SIZE(nfsd_programs),\n \t\t\t\t &nn->nfsd_svcstats,\n \t\t\t\t nfsd_max_blksize, nfsd);\n-\tif (serv == NULL)\n+\tif (serv == NULL) {\n+\t\tpercpu_ref_exit(&nn->nfsd_net_ref);\n \t\treturn -ENOMEM;\n+\t}\n \n \terror = svc_bind(serv, net);\n \tif (error < 0) {\n \t\tsvc_destroy(&serv);\n+\t\tpercpu_ref_exit(&nn->nfsd_net_ref);\n \t\treturn error;\n \t}\n \tspin_lock(&nfsd_notifier_lock);\n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 1,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=099461f8558eb0a1f4f3",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=df8d829bba3adcf3cc744c01d933b6fd7cf06e91"
+  }
+ },
+ {
+  "bug_id": "f2d245f1d76bbfa50e4c",
+  "title": "memory leak in llcp_sock_create",
+  "category": "leak",
+  "category_name": "Memory leaks",
+  "matched_categories": [
+   "leak"
+  ],
+  "subsystem": "net/nfc",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-11-08",
+  "fix_date": "2026-01-27",
+  "days_to_fix": 80,
+  "call_trace_functions": [
+   "__kmalloc_noprof",
+   "sk_prot_alloc",
+   "sk_alloc",
+   "nfc_llcp_sock_alloc",
+   "llcp_sock_create",
+   "nfc_sock_create"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "165c34fb6068ff153e3fc99a932a80a9d5755709",
+   "title": "nfc: llcp: Fix memleak in nfc_llcp_send_ui_frame().",
+   "fixes": [
+    {
+     "hash": "94f418a20664",
+     "title": "NFC: UI frame sending routine implementation"
+    }
+   ],
+   "files": [
+    {
+     "path": "net/nfc/llcp_commands.c",
+     "added": 16,
+     "removed": 1
+    },
+    {
+     "path": "net/nfc/llcp_core.c",
+     "added": 3,
+     "removed": 1
+    }
+   ],
+   "functions": [
+    "nfc_llcp_send_ui_frame",
+    "nfc_llcp_remove_local"
+   ],
+   "lines_changed": 21,
+   "diff_excerpt": "@@ -778,8 +778,23 @@ int nfc_llcp_send_ui_frame(struct nfc_llcp_sock *sock, u8 ssap, u8 dsap,\n \t\tif (likely(frag_len > 0))\n \t\t\tskb_put_data(pdu, msg_ptr, frag_len);\n \n+\t\tspin_lock(&local->tx_queue.lock);\n+\n+\t\tif (list_empty(&local->list)) {\n+\t\t\tspin_unlock(&local->tx_queue.lock);\n+\n+\t\t\tkfree_skb(pdu);\n+\n+\t\t\tlen -= remaining_len;\n+\t\t\tif (len == 0)\n+\t\t\t\tlen = -ENXIO;\n+\t\t\tbreak;\n+\t\t}\n+\n \t\t/* No need to check for the peer RW for UI frames */\n-\t\tskb_queue_tail(&local->tx_queue, pdu);\n+\t\t__skb_queue_tail(&local->tx_queue, pdu);\n+\n+\t\tspin_unlock(&local->tx_queue.lock);\n \n \t\tremaining_len -= frag_len;\n \t\tmsg_ptr += frag_len;\ndiff --git a/net/nfc/llcp_core.c b/net/nfc/llcp_core.c\nindex beeb3b4d28caba..444a3774c8e806 100644\n--- a/net/nfc/llcp_core.c\n+++ b/net/nfc/llcp_core.c\n@@ -316,7 +316,9 @@ static struct nfc_llcp_local *nfc_llcp_remove_local(struct nfc_dev *dev)\n[… excerpt truncated — full change at the source link]",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 1,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=f2d245f1d76bbfa50e4c",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=165c34fb6068ff153e3fc99a932a80a9d5755709"
+  }
+ },
+ {
+  "bug_id": "eadd98df8bceb15d7fed",
+  "title": "memory leak in btrfs_read_chunk_tree",
+  "category": "leak",
+  "category_name": "Memory leaks",
+  "matched_categories": [
+   "leak"
+  ],
+  "subsystem": "fs/btrfs",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-12-04",
+  "fix_date": "2025-12-15",
+  "days_to_fix": 11,
+  "call_trace_functions": [
+   "__kmalloc_cache_noprof",
+   "alloc_fs_devices",
+   "btrfs_read_chunk_tree",
+   "open_ctree",
+   "btrfs_get_tree",
+   "vfs_get_tree"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "b57f2ddd28737db6ff0e9da8467f0ab9d707e997",
+   "title": "btrfs: fix memory leak of fs_devices in degraded seed device path",
+   "fixes": [
+    {
+     "hash": "5f3758356944",
+     "title": "Btrfs: move the missing device to its own fs device list"
+    }
+   ],
+   "files": [
+    {
+     "path": "fs/btrfs/volumes.c",
+     "added": 1,
+     "removed": 0
+    }
+   ],
+   "functions": [
+    "open_seed_devices"
+   ],
+   "lines_changed": 1,
+   "diff_excerpt": "@@ -7131,6 +7131,7 @@ static struct btrfs_fs_devices *open_seed_devices(struct btrfs_fs_info *fs_info,\n \n \t\tfs_devices->seeding = true;\n \t\tfs_devices->opened = 1;\n+\t\tlist_add(&fs_devices->seed_list, &fs_info->fs_devices->seed_list);\n \t\treturn fs_devices;\n \t}\n \n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 1,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=eadd98df8bceb15d7fed",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=b57f2ddd28737db6ff0e9da8467f0ab9d707e997"
+  }
+ },
+ {
+  "bug_id": "527a7e48a3d3d315d862",
+  "title": "memory leak in __blkdev_issue_zero_pages",
+  "category": "leak",
+  "category_name": "Memory leaks",
+  "matched_categories": [
+   "leak"
+  ],
+  "subsystem": "block",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-11-30",
+  "fix_date": "2025-12-05",
+  "days_to_fix": 5,
+  "call_trace_functions": [
+   "kmem_cache_alloc_noprof",
+   "mempool_alloc_noprof",
+   "bio_alloc_bioset",
+   "__blkdev_issue_zero_pages",
+   "blkdev_issue_zeroout",
+   "blkdev_common_ioctl"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "f7e3f852a42d7cd8f1af2c330d9d153e30c8adcf",
+   "title": "block: fix memory leak in __blkdev_issue_zero_pages",
+   "fixes": [
+    {
+     "hash": "bf86bcdb4012",
+     "title": "blk-lib: check for kill signal in ioctl BLKZEROOUT"
+    }
+   ],
+   "files": [
+    {
+     "path": "block/blk-lib.c",
+     "added": 3,
+     "removed": 3
+    }
+   ],
+   "functions": [
+    "__blkdev_issue_zero_pages"
+   ],
+   "lines_changed": 6,
+   "diff_excerpt": "@@ -202,13 +202,13 @@ static void __blkdev_issue_zero_pages(struct block_device *bdev,\n \t\tunsigned int nr_vecs = __blkdev_sectors_to_bio_pages(nr_sects);\n \t\tstruct bio *bio;\n \n-\t\tbio = bio_alloc(bdev, nr_vecs, REQ_OP_WRITE, gfp_mask);\n-\t\tbio->bi_iter.bi_sector = sector;\n-\n \t\tif ((flags & BLKDEV_ZERO_KILLABLE) &&\n \t\t    fatal_signal_pending(current))\n \t\t\tbreak;\n \n+\t\tbio = bio_alloc(bdev, nr_vecs, REQ_OP_WRITE, gfp_mask);\n+\t\tbio->bi_iter.bi_sector = sector;\n+\n \t\tdo {\n \t\t\tunsigned int len;\n \n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 1,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=527a7e48a3d3d315d862",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=f7e3f852a42d7cd8f1af2c330d9d153e30c8adcf"
+  }
+ },
+ {
+  "bug_id": "ad45f827c88778ff7df6",
+  "title": "memory leak in hfs_init_fs_context",
+  "category": "leak",
+  "category_name": "Memory leaks",
+  "matched_categories": [
+   "leak"
+  ],
+  "subsystem": "fs/hfs",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-11-11",
+  "fix_date": "2026-02-10",
+  "days_to_fix": 91,
+  "call_trace_functions": [
+   "__kmalloc_cache_noprof",
+   "hfs_init_fs_context",
+   "alloc_fs_context",
+   "path_mount",
+   "__x64_sys_mount",
+   "do_syscall_64"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "05ce49a902be15dc93854cbfc20161205a9ee446",
+   "title": "hfs: ensure sb->s_fs_info is always cleaned up",
+   "fixes": [
+    {
+     "hash": "ffcd06b6d13b",
+     "title": "hfs: convert hfs to use the new mount api"
+    }
+   ],
+   "files": [
+    {
+     "path": "fs/hfs/mdb.c",
+     "added": 14,
+     "removed": 21
+    },
+    {
+     "path": "fs/hfs/super.c",
+     "added": 9,
+     "removed": 1
+    }
+   ],
+   "functions": [
+    "hfs_mdb_get",
+    "hfs_mdb_close",
+    "hfs_mdb_put",
+    "hfs_init_fs_context"
+   ],
+   "lines_changed": 45,
+   "diff_excerpt": "@@ -92,7 +92,7 @@ int hfs_mdb_get(struct super_block *sb)\n \t\t/* See if this is an HFS filesystem */\n \t\tbh = sb_bread512(sb, part_start + HFS_MDB_BLK, mdb);\n \t\tif (!bh)\n-\t\t\tgoto out;\n+\t\t\treturn -EIO;\n \n \t\tif (mdb->drSigWord == cpu_to_be16(HFS_SUPER_MAGIC))\n \t\t\tbreak;\n@@ -102,13 +102,14 @@ int hfs_mdb_get(struct super_block *sb)\n \t\t * (should do this only for cdrom/loop though)\n \t\t */\n \t\tif (hfs_part_find(sb, &part_start, &part_size))\n-\t\t\tgoto out;\n+\t\t\treturn -EIO;\n \t}\n \n \tHFS_SB(sb)->alloc_blksz = size = be32_to_cpu(mdb->drAlBlkSiz);\n \tif (!size || (size & (HFS_SECTOR_SIZE - 1))) {\n \t\tpr_err(\"bad allocation block size %d\\n\", size);\n-\t\tgoto out_bh;\n+\t\tbrelse(bh);\n+\t\treturn -EIO;\n \t}\n \n \tsize = min(HFS_SB(sb)->alloc_blksz, (u32)PAGE_SIZE);\n@@ -125,14 +126,16 @@ int hfs_mdb_get(struct super_block *sb)\n \tbrelse(bh);\n \tif (!sb_set_blocksize(sb, size)) {\n \t\tpr_err(\"unable to set blocksize to %u\\n\", size);\n[… excerpt truncated — full change at the source link]",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 3,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=ad45f827c88778ff7df6",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=05ce49a902be15dc93854cbfc20161205a9ee446"
+  }
+ },
+ {
+  "bug_id": "2b3391f44313b3983e91",
+  "title": "general protection fault in bq_flush_to_queue (2)",
+  "category": "null",
+  "category_name": "NULL pointer / bad address access",
+  "matched_categories": [
+   "null"
+  ],
+  "subsystem": "kernel/bpf",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-12-05",
+  "fix_date": "2026-02-28",
+  "days_to_fix": 85,
+  "call_trace_functions": [
+   "__cpu_map_flush",
+   "xdp_do_flush",
+   "bpf_test_run_xdp_live",
+   "bpf_prog_test_run_xdp",
+   "bpf_prog_test_run",
+   "__sys_bpf"
+  ],
+  "address_kind": "NULL pointer (KASAN: null-ptr-deref)",
+  "fix": {
+   "hash": "869c63d5975d55e97f6b168e885452b3da20ea47",
+   "title": "bpf: Fix race in cpumap on PREEMPT_RT",
+   "fixes": [
+    {
+     "hash": "3253cb49cbad",
+     "title": "softirq: Allow to drop the softirq-BKL lock on PREEMPT_RT"
+    }
+   ],
+   "files": [
+    {
+     "path": "kernel/bpf/cpumap.c",
+     "added": 15,
+     "removed": 2
+    }
+   ],
+   "functions": [
+    "__cpu_map_entry_alloc",
+    "bq_flush_to_queue",
+    "bq_enqueue",
+    "__cpu_map_flush"
+   ],
+   "lines_changed": 17,
+   "diff_excerpt": "@@ -29,6 +29,7 @@\n #include <linux/sched.h>\n #include <linux/workqueue.h>\n #include <linux/kthread.h>\n+#include <linux/local_lock.h>\n #include <linux/completion.h>\n #include <trace/events/xdp.h>\n #include <linux/btf_ids.h>\n@@ -52,6 +53,7 @@ struct xdp_bulk_queue {\n \tstruct list_head flush_node;\n \tstruct bpf_cpu_map_entry *obj;\n \tunsigned int count;\n+\tlocal_lock_t bq_lock;\n };\n \n /* Struct for every remote \"destination\" CPU in map */\n@@ -451,6 +453,7 @@ __cpu_map_entry_alloc(struct bpf_map *map, struct bpf_cpumap_val *value,\n \tfor_each_possible_cpu(i) {\n \t\tbq = per_cpu_ptr(rcpu->bulkq, i);\n \t\tbq->obj = rcpu;\n+\t\tlocal_lock_init(&bq->bq_lock);\n \t}\n \n \t/* Alloc queue */\n@@ -722,6 +725,8 @@ static void bq_flush_to_queue(struct xdp_bulk_queue *bq)\n \tstruct ptr_ring *q;\n \tint i;\n \n+\tlockdep_assert_held(&bq->bq_lock);\n+\n[… excerpt truncated — full change at the source link]",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 4,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=2b3391f44313b3983e91",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=869c63d5975d55e97f6b168e885452b3da20ea47"
+  }
+ },
+ {
+  "bug_id": "2eb8d1719f7cfcfa6840",
+  "title": "general protection fault in rose_rt_ioctl",
+  "category": "null",
+  "category_name": "NULL pointer / bad address access",
+  "matched_categories": [
+   "null"
+  ],
+  "subsystem": "net/rose",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-08-27",
+  "fix_date": "2025-08-28",
+  "days_to_fix": 1,
+  "call_trace_functions": [
+   "rose_ioctl",
+   "sock_do_ioctl",
+   "sock_ioctl",
+   "__se_sys_ioctl",
+   "do_syscall_64",
+   "entry_SYSCALL_64_after_hwframe"
+  ],
+  "address_kind": "NULL pointer (KASAN: null-ptr-deref)",
+  "fix": {
+   "hash": "1cc8a5b534e5f9b5e129e54ee2e63c9f5da4f39a",
+   "title": "net: rose: fix a typo in rose_clear_routes()",
+   "fixes": [
+    {
+     "hash": "da9c9c877597",
+     "title": "net: rose: include node references in rose_neigh refcount"
+    }
+   ],
+   "files": [
+    {
+     "path": "net/rose/rose_route.c",
+     "added": 1,
+     "removed": 1
+    }
+   ],
+   "functions": [
+    "rose_clear_routes"
+   ],
+   "lines_changed": 2,
+   "diff_excerpt": "@@ -562,7 +562,7 @@ static int rose_clear_routes(void)\n \t\trose_node = rose_node->next;\n \n \t\tif (!t->loopback) {\n-\t\t\tfor (i = 0; i < rose_node->count; i++)\n+\t\t\tfor (i = 0; i < t->count; i++)\n \t\t\t\trose_neigh_put(t->neighbour[i]);\n \t\t\trose_remove_node(t);\n \t\t}\n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 1,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=2eb8d1719f7cfcfa6840",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=1cc8a5b534e5f9b5e129e54ee2e63c9f5da4f39a"
+  }
+ },
+ {
+  "bug_id": "8df17e797225d69050d4",
+  "title": "general protection fault in bio_seg_gap",
+  "category": "null",
+  "category_name": "NULL pointer / bad address access",
+  "matched_categories": [
+   "null"
+  ],
+  "subsystem": "block",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-11-10",
+  "fix_date": "2025-11-14",
+  "days_to_fix": 4,
+  "call_trace_functions": [
+   "bio_attempt_back_merge",
+   "blk_attempt_plug_merge",
+   "blk_mq_submit_bio",
+   "__submit_bio",
+   "submit_bio_noacct_nocheck",
+   "submit_bio_wait"
+  ],
+  "address_kind": "NULL pointer (KASAN: null-ptr-deref)",
+  "fix": {
+   "hash": "fd9ecd005252b595fd02ff7fcc4056251027404d",
+   "title": "block: fix merging data-less bios",
+   "fixes": [
+    {
+     "hash": "2f6b2565d43c",
+     "title": "block: accumulate memory segment gaps per bio"
+    }
+   ],
+   "files": [
+    {
+     "path": "block/blk-merge.c",
+     "added": 3,
+     "removed": 0
+    }
+   ],
+   "functions": [
+    "bio_seg_gap"
+   ],
+   "lines_changed": 3,
+   "diff_excerpt": "@@ -737,6 +737,9 @@ u8 bio_seg_gap(struct request_queue *q, struct bio *prev, struct bio *next,\n {\n \tstruct bio_vec pb, nb;\n \n+\tif (!bio_has_data(prev))\n+\t\treturn 0;\n+\n \tgaps_bit = min_not_zero(gaps_bit, prev->bi_bvec_gap_bit);\n \tgaps_bit = min_not_zero(gaps_bit, next->bi_bvec_gap_bit);\n \n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 0,
+  "has_discussion": false,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=8df17e797225d69050d4",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=fd9ecd005252b595fd02ff7fcc4056251027404d"
+  }
+ },
+ {
+  "bug_id": "d36d5ae81e1b0a53ef58",
+  "title": "general protection fault in print_reg_state",
+  "category": "null",
+  "category_name": "NULL pointer / bad address access",
+  "matched_categories": [
+   "null"
+  ],
+  "subsystem": "kernel/bpf",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-09-23",
+  "fix_date": "2025-10-02",
+  "days_to_fix": 9,
+  "call_trace_functions": [
+   "print_verifier_state",
+   "do_check_common",
+   "bpf_check",
+   "bpf_prog_load",
+   "__sys_bpf",
+   "__x64_sys_bpf"
+  ],
+  "address_kind": "NULL pointer (KASAN: null-ptr-deref)",
+  "fix": {
+   "hash": "34904582b502a86fdb4d7984b12cacd2faabbe0d",
+   "title": "bpf: Skip scalar adjustment for BPF_NEG if dst is a pointer",
+   "fixes": [
+    {
+     "hash": "aced132599b3",
+     "title": "bpf: Add range tracking for BPF_NEG"
+    }
+   ],
+   "files": [
+    {
+     "path": "kernel/bpf/verifier.c",
+     "added": 2,
+     "removed": 1
+    }
+   ],
+   "functions": [
+    "check_alu_op"
+   ],
+   "lines_changed": 3,
+   "diff_excerpt": "@@ -15645,7 +15645,8 @@ static int check_alu_op(struct bpf_verifier_env *env, struct bpf_insn *insn)\n \t\t}\n \n \t\t/* check dest operand */\n-\t\tif (opcode == BPF_NEG) {\n+\t\tif (opcode == BPF_NEG &&\n+\t\t    regs[insn->dst_reg].type == SCALAR_VALUE) {\n \t\t\terr = check_reg_arg(env, insn->dst_reg, DST_OP_NO_MARK);\n \t\t\terr = err ?: adjust_scalar_min_max_vals(env, insn,\n \t\t\t\t\t\t\t &regs[insn->dst_reg],\n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 4,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=d36d5ae81e1b0a53ef58",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=34904582b502a86fdb4d7984b12cacd2faabbe0d"
+  }
+ },
+ {
+  "bug_id": "f02665daa2abeef4a947",
+  "title": "general protection fault in snd_usbmidi_do_output",
+  "category": "null",
+  "category_name": "NULL pointer / bad address access",
+  "matched_categories": [
+   "null"
+  ],
+  "subsystem": "sound/usb",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-09-20",
+  "fix_date": "2025-09-29",
+  "days_to_fix": 9,
+  "call_trace_functions": [
+   "snd_usbmidi_error_timer",
+   "call_timer_fn",
+   "__run_timer_base",
+   "run_timer_softirq",
+   "handle_softirqs",
+   "__irq_exit_rcu"
+  ],
+  "address_kind": "NULL pointer (KASAN: null-ptr-deref)",
+  "fix": {
+   "hash": "9f2c0ac1423d5f267e7f1d1940780fc764b0fee3",
+   "title": "ALSA: usb-audio: fix race condition to UAF in snd_usbmidi_free",
+   "fixes": [
+    {
+     "hash": "0718a78f6a9f",
+     "title": "ALSA: usb-audio: Kill timer properly at removal"
+    }
+   ],
+   "files": [
+    {
+     "path": "sound/usb/midi.c",
+     "added": 4,
+     "removed": 5
+    }
+   ],
+   "functions": [
+    "snd_usbmidi_free"
+   ],
+   "lines_changed": 9,
+   "diff_excerpt": "@@ -1522,15 +1522,14 @@ static void snd_usbmidi_free(struct snd_usb_midi *umidi)\n {\n \tint i;\n \n+\tif (!umidi->disconnected)\n+\t\tsnd_usbmidi_disconnect(&umidi->list);\n+\n \tfor (i = 0; i < MIDI_MAX_ENDPOINTS; ++i) {\n \t\tstruct snd_usb_midi_endpoint *ep = &umidi->endpoints[i];\n-\t\tif (ep->out)\n-\t\t\tsnd_usbmidi_out_endpoint_delete(ep->out);\n-\t\tif (ep->in)\n-\t\t\tsnd_usbmidi_in_endpoint_delete(ep->in);\n+\t\tkfree(ep->out);\n \t}\n \tmutex_destroy(&umidi->mutex);\n-\ttimer_shutdown_sync(&umidi->error_timer);\n \tkfree(umidi);\n }\n \n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 2
+  },
+  "num_patch_versions": 2,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=f02665daa2abeef4a947",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=9f2c0ac1423d5f267e7f1d1940780fc764b0fee3"
+  }
+ },
+ {
+  "bug_id": "9c3e0cdfbfe351b0bc0e",
+  "title": "general protection fault in btrfs_root_node",
+  "category": "null",
+  "category_name": "NULL pointer / bad address access",
+  "matched_categories": [
+   "null"
+  ],
+  "subsystem": "fs/btrfs",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2024-08-30",
+  "fix_date": "2025-09-23",
+  "days_to_fix": 389,
+  "call_trace_functions": [
+   "btrfs_read_lock_root_node",
+   "btrfs_build_ref_tree",
+   "open_ctree",
+   "btrfs_get_tree",
+   "vfs_get_tree",
+   "do_new_mount"
+  ],
+  "address_kind": "NULL pointer (KASAN: null-ptr-deref)",
+  "fix": {
+   "hash": "ed4e6b5d644c4dd2bc2872ffec036b7da0ec2e27",
+   "title": "btrfs: ref-verify: handle damaged extent root tree",
+   "fixes": [],
+   "files": [
+    {
+     "path": "fs/btrfs/ref-verify.c",
+     "added": 8,
+     "removed": 1
+    }
+   ],
+   "functions": [
+    "btrfs_build_ref_tree"
+   ],
+   "lines_changed": 9,
+   "diff_excerpt": "@@ -980,11 +980,18 @@ int btrfs_build_ref_tree(struct btrfs_fs_info *fs_info)\n \tif (!btrfs_test_opt(fs_info, REF_VERIFY))\n \t\treturn 0;\n \n+\textent_root = btrfs_extent_root(fs_info, 0);\n+\t/* If the extent tree is damaged we cannot ignore it (IGNOREBADROOTS). */\n+\tif (IS_ERR(extent_root)) {\n+\t\tbtrfs_warn(fs_info, \"ref-verify: extent tree not available, disabling\");\n+\t\tbtrfs_clear_opt(fs_info->mount_opt, REF_VERIFY);\n+\t\treturn 0;\n+\t}\n+\n \tpath = btrfs_alloc_path();\n \tif (!path)\n \t\treturn -ENOMEM;\n \n-\textent_root = btrfs_extent_root(fs_info, 0);\n \teb = btrfs_read_lock_root_node(extent_root);\n \tlevel = btrfs_header_level(eb);\n \tpath->nodes[level] = eb;\n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 1,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=9c3e0cdfbfe351b0bc0e",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=ed4e6b5d644c4dd2bc2872ffec036b7da0ec2e27"
+  }
+ },
+ {
+  "bug_id": "5498a510ff9de39d37da",
+  "title": "KASAN: stack-out-of-bounds Read in mptcp_pm_nl_get_local_id",
+  "category": "memsafety",
+  "category_name": "Use-after-free and out-of-bounds access",
+  "matched_categories": [
+   "memsafety"
+  ],
+  "subsystem": "net/mptcp",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2026-01-04",
+  "fix_date": "2026-01-27",
+  "days_to_fix": 23,
+  "call_trace_functions": [
+   "mptcp_pm_nl_get_local_id",
+   "mptcp_pm_get_local_id",
+   "subflow_chk_local_id",
+   "subflow_v6_rebuild_header",
+   "tcp_connect",
+   "tcp_v6_connect"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "e2a9eeb69f7d4ca4cf4c70463af77664fdb6ab1d",
+   "title": "mptcp: fix race in mptcp_pm_nl_flush_addrs_doit()",
+   "fixes": [
+    {
+     "hash": "141694df6573",
+     "title": "mptcp: remove address when netlink flushes addrs"
+    }
+   ],
+   "files": [
+    {
+     "path": "net/mptcp/pm_kernel.c",
+     "added": 13,
+     "removed": 3
+    }
+   ],
+   "functions": [
+    "__reset_counters"
+   ],
+   "lines_changed": 16,
+   "diff_excerpt": "@@ -1294,16 +1294,26 @@ static void __reset_counters(struct pm_nl_pernet *pernet)\n int mptcp_pm_nl_flush_addrs_doit(struct sk_buff *skb, struct genl_info *info)\n {\n \tstruct pm_nl_pernet *pernet = genl_info_pm_nl(info);\n-\tLIST_HEAD(free_list);\n+\tstruct list_head free_list;\n \n \tspin_lock_bh(&pernet->lock);\n-\tlist_splice_init(&pernet->endp_list, &free_list);\n+\tfree_list = pernet->endp_list;\n+\tINIT_LIST_HEAD_RCU(&pernet->endp_list);\n \t__reset_counters(pernet);\n \tpernet->next_id = 1;\n \tbitmap_zero(pernet->id_bitmap, MPTCP_PM_MAX_ADDR_ID + 1);\n \tspin_unlock_bh(&pernet->lock);\n-\tmptcp_nl_flush_addrs_list(sock_net(skb->sk), &free_list);\n+\n+\tif (free_list.next == &pernet->endp_list)\n+\t\treturn 0;\n+\n \tsynchronize_rcu();\n+\n+\t/* Adjust the pointers to free_list instead of pernet->endp_list */\n+\tfree_list.prev->next = &free_list;\n+\tfree_list.next->prev = &free_list;\n+\n+\tmptcp_nl_flush_addrs_list(sock_net(skb->sk), &free_list);\n \t__flush_addrs(&free_list);\n \treturn 0;\n }\n[… excerpt truncated — full change at the source link]",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 3,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=5498a510ff9de39d37da",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=e2a9eeb69f7d4ca4cf4c70463af77664fdb6ab1d"
+  }
+ },
+ {
+  "bug_id": "cf96bc82a588a27346a8",
+  "title": "UBSAN: array-index-out-of-bounds in ocfs2_xa_remove_entry",
+  "category": "memsafety",
+  "category_name": "Use-after-free and out-of-bounds access",
+  "matched_categories": [
+   "memsafety"
+  ],
+  "subsystem": "fs/ocfs2",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-12-08",
+  "fix_date": "2025-12-17",
+  "days_to_fix": 9,
+  "call_trace_functions": [
+   "ocfs2_xa_remove_entry",
+   "ocfs2_xa_set",
+   "ocfs2_xattr_block_set",
+   "__ocfs2_xattr_set_handle",
+   "ocfs2_xattr_set",
+   "__vfs_removexattr"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "d3cd8de2e17e496e115f36faeccad7d219edd381",
+   "title": "ocfs2: adjust ocfs2_xa_remove_entry() to match UBSAN boundary checks",
+   "fixes": [],
+   "files": [
+    {
+     "path": "fs/ocfs2/xattr.c",
+     "added": 3,
+     "removed": 2
+    }
+   ],
+   "functions": [
+    "ocfs2_xa_remove_entry"
+   ],
+   "lines_changed": 5,
+   "diff_excerpt": "@@ -1971,8 +1971,7 @@ static void ocfs2_xa_remove_entry(struct ocfs2_xa_loc *loc)\n \tocfs2_xa_wipe_namevalue(loc);\n \tloc->xl_entry = NULL;\n \n-\tle16_add_cpu(&xh->xh_count, -1);\n-\tcount = le16_to_cpu(xh->xh_count);\n+\tcount = le16_to_cpu(xh->xh_count) - 1;\n \n \t/*\n \t * Only zero out the entry if there are more remaining.  This is\n@@ -1987,6 +1986,8 @@ static void ocfs2_xa_remove_entry(struct ocfs2_xa_loc *loc)\n \t\tmemset(&xh->xh_entries[count], 0,\n \t\t       sizeof(struct ocfs2_xattr_entry));\n \t}\n+\n+\txh->xh_count = cpu_to_le16(count);\n }\n \n /*\n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 1,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=cf96bc82a588a27346a8",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=d3cd8de2e17e496e115f36faeccad7d219edd381"
+  }
+ },
+ {
+  "bug_id": "43a5d0c073e882f8cf610447d0ea742a42ade211",
+  "title": "KASAN: stack-out-of-bounds Write in dev_map_enqueue_multi",
+  "category": "memsafety",
+  "category_name": "Use-after-free and out-of-bounds access",
+  "matched_categories": [
+   "memsafety"
+  ],
+  "subsystem": "kernel/bpf",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2026-03-03",
+  "fix_date": "2026-03-04",
+  "days_to_fix": 1,
+  "call_trace_functions": [
+   "dev_map_enqueue_multi",
+   "xdp_do_redirect",
+   "tun_xdp_act",
+   "tun_get_user",
+   "tun_chr_write_iter",
+   "vfs_write"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "b7bf516c3ecd9a2aae2dc2635178ab87b734fef1",
+   "title": "bpf: Fix stack-out-of-bounds write in devmap",
+   "fixes": [
+    {
+     "hash": "aeea1b86f936",
+     "title": "bpf, devmap: Exclude XDP broadcast to master device"
+    }
+   ],
+   "files": [
+    {
+     "path": "kernel/bpf/devmap.c",
+     "added": 17,
+     "removed": 5
+    }
+   ],
+   "functions": [
+    "is_ifindex_excluded",
+    "dev_map_enqueue_multi",
+    "dev_map_redirect_multi"
+   ],
+   "lines_changed": 22,
+   "diff_excerpt": "@@ -588,18 +588,22 @@ static inline bool is_ifindex_excluded(int *excluded, int num_excluded, int ifin\n }\n \n /* Get ifindex of each upper device. 'indexes' must be able to hold at\n- * least MAX_NEST_DEV elements.\n- * Returns the number of ifindexes added.\n+ * least 'max' elements.\n+ * Returns the number of ifindexes added, or -EOVERFLOW if there are too\n+ * many upper devices.\n  */\n-static int get_upper_ifindexes(struct net_device *dev, int *indexes)\n+static int get_upper_ifindexes(struct net_device *dev, int *indexes, int max)\n {\n \tstruct net_device *upper;\n \tstruct list_head *iter;\n \tint n = 0;\n \n \tnetdev_for_each_upper_dev_rcu(dev, upper, iter) {\n+\t\tif (n >= max)\n+\t\t\treturn -EOVERFLOW;\n \t\tindexes[n++] = upper->ifindex;\n \t}\n+\n \treturn n;\n }\n \n@@ -615,7 +619,11 @@ int dev_map_enqueue_multi(struct xdp_frame *xdpf, struct net_device *dev_rx,\n \tint err;\n \n \tif (exclude_ingress) {\n[… excerpt truncated — full change at the source link]",
+   "bugs_in_shard": 2
+  },
+  "num_patch_versions": 2,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?id=43a5d0c073e882f8cf610447d0ea742a42ade211",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=b7bf516c3ecd9a2aae2dc2635178ab87b734fef1"
+  }
+ },
+ {
+  "bug_id": "bc1aabf52d0a31e91f96",
+  "title": "KASAN: slab-out-of-bounds Read in ieee80211_add_virtual_monitor",
+  "category": "memsafety",
+  "category_name": "Use-after-free and out-of-bounds access",
+  "matched_categories": [
+   "memsafety"
+  ],
+  "subsystem": "net/mac80211",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-11-12",
+  "fix_date": "2025-12-17",
+  "days_to_fix": 35,
+  "call_trace_functions": [
+   "ieee80211_add_virtual_monitor",
+   "ieee80211_do_stop",
+   "ieee80211_stop",
+   "__dev_close_many",
+   "__dev_change_flags",
+   "netif_change_flags"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "cbf0dc37bb4e949f1c76566657e71f8e0bdcf338",
+   "title": "wifi: mac80211: fix list iteration in ieee80211_add_virtual_monitor()",
+   "fixes": [
+    {
+     "hash": "a5aa46f1ac4f",
+     "title": "wifi: mac80211: track MU-MIMO configuration on disabled interfaces"
+    }
+   ],
+   "files": [
+    {
+     "path": "net/mac80211/iface.c",
+     "added": 1,
+     "removed": 1
+    }
+   ],
+   "functions": [
+    "ieee80211_add_virtual_monitor"
+   ],
+   "lines_changed": 2,
+   "diff_excerpt": "@@ -1251,7 +1251,7 @@ int ieee80211_add_virtual_monitor(struct ieee80211_local *local,\n \tif (!creator_sdata) {\n \t\tstruct ieee80211_sub_if_data *other;\n \n-\t\tlist_for_each_entry(other, &local->mon_list, list) {\n+\t\tlist_for_each_entry_rcu(other, &local->mon_list, u.mntr.list) {\n \t\t\tif (!other->vif.bss_conf.mu_mimo_owner)\n \t\t\t\tcontinue;\n \n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 1,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=bc1aabf52d0a31e91f96",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=cbf0dc37bb4e949f1c76566657e71f8e0bdcf338"
+  }
+ },
+ {
+  "bug_id": "30754ca335e6fb7e3092",
+  "title": "KASAN: slab-use-after-free Read in cmp_bss",
+  "category": "memsafety",
+  "category_name": "Use-after-free and out-of-bounds access",
+  "matched_categories": [
+   "memsafety"
+  ],
+  "subsystem": "net/wireless",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-08-09",
+  "fix_date": "2025-08-30",
+  "days_to_fix": 21,
+  "call_trace_functions": [
+   "cmp_bss",
+   "__cfg80211_bss_update",
+   "cfg80211_inform_single_bss_data",
+   "cfg80211_inform_bss_data",
+   "cfg80211_inform_bss_frame_data",
+   "ieee80211_bss_info_update"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "26e84445f02ce6b2fe5f3e0e28ff7add77f35e08",
+   "title": "wifi: cfg80211: fix use-after-free in cmp_bss()",
+   "fixes": [
+    {
+     "hash": "3ab8227d3e7d",
+     "title": "cfg80211: refactor cfg80211_bss_update"
+    }
+   ],
+   "files": [
+    {
+     "path": "net/wireless/scan.c",
+     "added": 2,
+     "removed": 1
+    }
+   ],
+   "functions": [
+    "cfg80211_update_known_bss"
+   ],
+   "lines_changed": 3,
+   "diff_excerpt": "@@ -1916,7 +1916,8 @@ cfg80211_update_known_bss(struct cfg80211_registered_device *rdev,\n \t\t\t */\n \n \t\t\tf = rcu_access_pointer(new->pub.beacon_ies);\n-\t\t\tkfree_rcu((struct cfg80211_bss_ies *)f, rcu_head);\n+\t\t\tif (!new->pub.hidden_beacon_bss)\n+\t\t\t\tkfree_rcu((struct cfg80211_bss_ies *)f, rcu_head);\n \t\t\treturn false;\n \t\t}\n \n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 1,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=30754ca335e6fb7e3092",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=26e84445f02ce6b2fe5f3e0e28ff7add77f35e08"
+  }
+ },
+ {
+  "bug_id": "37fd81fa4305a9eadfb0",
+  "title": "KASAN: slab-use-after-free Write in number",
+  "category": "memsafety",
+  "category_name": "Use-after-free and out-of-bounds access",
+  "matched_categories": [
+   "memsafety"
+  ],
+  "subsystem": "drivers/media",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-12-29",
+  "fix_date": "2026-02-25",
+  "days_to_fix": 58,
+  "call_trace_functions": [
+   "number",
+   "vsnprintf",
+   "snprintf",
+   "media_request_alloc",
+   "media_device_request_alloc",
+   "media_device_ioctl"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "a260bd22a355bcdb74cedac6ab9b10739cd2c62c",
+   "title": "media: mc: fix potential use-after-free in media_request_alloc()",
+   "fixes": [
+    {
+     "hash": "6f504cbf108a",
+     "title": "media: convert media_request_alloc() to FD_PREPARE()"
+    }
+   ],
+   "files": [
+    {
+     "path": "drivers/media/mc/mc-request.c",
+     "added": 3,
+     "removed": 3
+    }
+   ],
+   "functions": [
+    "media_request_alloc"
+   ],
+   "lines_changed": 6,
+   "diff_excerpt": "@@ -315,12 +315,12 @@ int media_request_alloc(struct media_device *mdev, int *alloc_fd)\n \n \tfd_prepare_file(fdf)->private_data = req;\n \n-\t*alloc_fd = fd_publish(fdf);\n-\n \tsnprintf(req->debug_str, sizeof(req->debug_str), \"%u:%d\",\n-\t\t atomic_inc_return(&mdev->request_id), *alloc_fd);\n+\t\t atomic_inc_return(&mdev->request_id), fd_prepare_fd(fdf));\n \tdev_dbg(mdev->dev, \"request: allocated %s\\n\", req->debug_str);\n \n+\t*alloc_fd = fd_publish(fdf);\n+\n \treturn 0;\n \n err_free_req:\n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 1,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=37fd81fa4305a9eadfb0",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=a260bd22a355bcdb74cedac6ab9b10739cd2c62c"
+  }
+ },
+ {
+  "bug_id": "b09c1af8764c0097bb19",
+  "title": "KMSAN: uninit-value in ieee80211_radiotap_iterator_next",
+  "category": "uninit",
+  "category_name": "Use of uninitialized memory",
+  "matched_categories": [
+   "uninit"
+  ],
+  "subsystem": "net/wireless",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2026-02-15",
+  "fix_date": "2026-02-24",
+  "days_to_fix": 9,
+  "call_trace_functions": [
+   "ieee80211_radiotap_iterator_next",
+   "ieee80211_parse_tx_radiotap",
+   "ieee80211_monitor_start_xmit",
+   "dev_hard_start_xmit",
+   "__dev_queue_xmit",
+   "packet_xmit"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "c854758abe0b8d86f9c43dc060ff56a0ee5b31e0",
+   "title": "wifi: radiotap: reject radiotap with unknown bits",
+   "fixes": [
+    {
+     "hash": "33e5a2f776e3",
+     "title": "wireless: update radiotap parser"
+    }
+   ],
+   "files": [
+    {
+     "path": "net/wireless/radiotap.c",
+     "added": 2,
+     "removed": 2
+    }
+   ],
+   "functions": [
+    "ieee80211_radiotap_iterator_next"
+   ],
+   "lines_changed": 4,
+   "diff_excerpt": "@@ -239,14 +239,14 @@ int ieee80211_radiotap_iterator_next(\n \t\tdefault:\n \t\t\tif (!iterator->current_namespace ||\n \t\t\t    iterator->_arg_index >= iterator->current_namespace->n_bits) {\n-\t\t\t\tif (iterator->current_namespace == &radiotap_ns)\n-\t\t\t\t\treturn -ENOENT;\n \t\t\t\talign = 0;\n \t\t\t} else {\n \t\t\t\talign = iterator->current_namespace->align_size[iterator->_arg_index].align;\n \t\t\t\tsize = iterator->current_namespace->align_size[iterator->_arg_index].size;\n \t\t\t}\n \t\t\tif (!align) {\n+\t\t\t\tif (iterator->current_namespace == &radiotap_ns)\n+\t\t\t\t\treturn -ENOENT;\n \t\t\t\t/* skip all subsequent data */\n \t\t\t\titerator->_arg = iterator->_next_ns_data;\n \t\t\t\t/* give up on this namespace */\n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 1,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=b09c1af8764c0097bb19",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=c854758abe0b8d86f9c43dc060ff56a0ee5b31e0"
+  }
+ },
+ {
+  "bug_id": "bfc7323743ca6dbcc3d3",
+  "title": "KMSAN: kernel-infoleak in __skb_datagram_iter (5)",
+  "category": "uninit",
+  "category_name": "Use of uninitialized memory",
+  "matched_categories": [
+   "uninit"
+  ],
+  "subsystem": "net/wireless",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2026-01-08",
+  "fix_date": "2026-01-08",
+  "days_to_fix": 0,
+  "call_trace_functions": [
+   "_copy_to_iter",
+   "__skb_datagram_iter",
+   "skb_copy_datagram_iter",
+   "tcp_peek_sndq",
+   "tcp_recvmsg_locked",
+   "tcp_recvmsg"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "21cbf883d073abbfe09e3924466aa5e0449e7261",
+   "title": "wifi: avoid kernel-infoleak from struct iw_point",
+   "fixes": [
+    {
+     "hash": "87de87d5e47f",
+     "title": "wext: Dispatch and handle compat ioctls entirely in net/wireless/wext.c"
+    }
+   ],
+   "files": [
+    {
+     "path": "net/wireless/wext-core.c",
+     "added": 4,
+     "removed": 0
+    },
+    {
+     "path": "net/wireless/wext-priv.c",
+     "added": 4,
+     "removed": 0
+    }
+   ],
+   "functions": [
+    "compat_standard_call",
+    "compat_private_call"
+   ],
+   "lines_changed": 8,
+   "diff_excerpt": "@@ -1101,6 +1101,10 @@ static int compat_standard_call(struct net_device\t*dev,\n \t\treturn ioctl_standard_call(dev, iwr, cmd, info, handler);\n \n \tiwp_compat = (struct compat_iw_point *) &iwr->u.data;\n+\n+\t/* struct iw_point has a 32bit hole on 64bit arches. */\n+\tmemset(&iwp, 0, sizeof(iwp));\n+\n \tiwp.pointer = compat_ptr(iwp_compat->pointer);\n \tiwp.length = iwp_compat->length;\n \tiwp.flags = iwp_compat->flags;\ndiff --git a/net/wireless/wext-priv.c b/net/wireless/wext-priv.c\nindex 674d426a9d24f9..37d1147019c2ba 100644\n--- a/net/wireless/wext-priv.c\n+++ b/net/wireless/wext-priv.c\n@@ -228,6 +228,10 @@ int compat_private_call(struct net_device *dev, struct iwreq *iwr,\n \t\tstruct iw_point iwp;\n \n \t\tiwp_compat = (struct compat_iw_point *) &iwr->u.data;\n+\n+\t\t/* struct iw_point has a 32bit hole on 64bit arches. */\n+\t\tmemset(&iwp, 0, sizeof(iwp));\n+\n \t\tiwp.pointer = compat_ptr(iwp_compat->pointer);\n \t\tiwp.length = iwp_compat->length;\n \t\tiwp.flags = iwp_compat->flags;\n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 1,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=bfc7323743ca6dbcc3d3",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=21cbf883d073abbfe09e3924466aa5e0449e7261"
+  }
+ },
+ {
+  "bug_id": "aae646f09192f72a68dc",
+  "title": "KMSAN: uninit-value in __inet_bind",
+  "category": "uninit",
+  "category_name": "Use of uninitialized memory",
+  "matched_categories": [
+   "uninit"
+  ],
+  "subsystem": "net/rds",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2026-02-12",
+  "fix_date": "2026-02-19",
+  "days_to_fix": 7,
+  "call_trace_functions": [
+   "__inet_bind",
+   "inet_bind",
+   "kernel_bind",
+   "rds_tcp_conn_path_connect",
+   "rds_connect_worker",
+   "process_scheduled_works"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "7b821da55b3f88c1703ff2c2074d182295a84f6b",
+   "title": "rds: tcp: fix uninit-value in __inet_bind",
+   "fixes": [
+    {
+     "hash": "a20a6992558f",
+     "title": "net/rds: Encode cp_index in TCP source port"
+    }
+   ],
+   "files": [
+    {
+     "path": "net/rds/tcp.c",
+     "added": 1,
+     "removed": 1
+    }
+   ],
+   "functions": [
+    "rds_tcp_conn_alloc"
+   ],
+   "lines_changed": 2,
+   "diff_excerpt": "@@ -373,7 +373,7 @@ static int rds_tcp_conn_alloc(struct rds_connection *conn, gfp_t gfp)\n \tint ret = 0;\n \n \tfor (i = 0; i < RDS_MPATH_WORKERS; i++) {\n-\t\ttc = kmem_cache_alloc(rds_tcp_conn_slab, gfp);\n+\t\ttc = kmem_cache_zalloc(rds_tcp_conn_slab, gfp);\n \t\tif (!tc) {\n \t\t\tret = -ENOMEM;\n \t\t\tgoto fail;\n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 2
+  },
+  "num_patch_versions": 2,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=aae646f09192f72a68dc",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=7b821da55b3f88c1703ff2c2074d182295a84f6b"
+  }
+ },
+ {
+  "bug_id": "08d8956768c96a2c52cf",
+  "title": "KMSAN: uninit-value in longest_match_std (2)",
+  "category": "uninit",
+  "category_name": "Use of uninitialized memory",
+  "matched_categories": [
+   "uninit"
+  ],
+  "subsystem": "fs/ntfs3",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2023-12-31",
+  "fix_date": "2026-01-05",
+  "days_to_fix": 736,
+  "call_trace_functions": [
+   "longest_match_std",
+   "compress_lznt",
+   "ni_write_frame",
+   "ntfs_compress_write",
+   "ntfs_file_write_iter",
+   "aio_write"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "f223ebffa185cc8da934333c5a31ff2d4f992dc9",
+   "title": "fs/ntfs3: Initialize new folios before use",
+   "fixes": [
+    {
+     "hash": "584f60ba22f7",
+     "title": "ntfs3: Convert ntfs_get_frame_pages() to use a folio"
+    }
+   ],
+   "files": [
+    {
+     "path": "fs/ntfs3/file.c",
+     "added": 1,
+     "removed": 1
+    }
+   ],
+   "functions": [
+    "ntfs_get_frame_pages"
+   ],
+   "lines_changed": 2,
+   "diff_excerpt": "@@ -995,7 +995,7 @@ static int ntfs_get_frame_pages(struct address_space *mapping, pgoff_t index,\n \n \t\tfolio = __filemap_get_folio(mapping, index,\n \t\t\t\t\t    FGP_LOCK | FGP_ACCESSED | FGP_CREAT,\n-\t\t\t\t\t    gfp_mask);\n+\t\t\t\t\t    gfp_mask | __GFP_ZERO);\n \t\tif (IS_ERR(folio)) {\n \t\t\twhile (npages--) {\n \t\t\t\tfolio = page_folio(pages[npages]);\n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 1,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=08d8956768c96a2c52cf",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=f223ebffa185cc8da934333c5a31ff2d4f992dc9"
+  }
+ },
+ {
+  "bug_id": "afad90ffc8645324afe5",
+  "title": "KMSAN: uninit-value in pptp_xmit (3)",
+  "category": "uninit",
+  "category_name": "Use of uninitialized memory",
+  "matched_categories": [
+   "uninit"
+  ],
+  "subsystem": "drivers/net",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-07-28",
+  "fix_date": "2025-07-31",
+  "days_to_fix": 3,
+  "call_trace_functions": [
+   "pptp_xmit",
+   "ppp_input",
+   "pppoe_rcv_core",
+   "sk_backlog_rcv",
+   "__release_sock",
+   "release_sock"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "de9c4861fb42f0cd72da844c3c34f692d5895b7b",
+   "title": "pptp: ensure minimal skb length in pptp_xmit()",
+   "fixes": [
+    {
+     "hash": "1da177e4c3f4",
+     "title": "Linux-2.6.12-rc2"
+    }
+   ],
+   "files": [
+    {
+     "path": "drivers/net/ppp/pptp.c",
+     "added": 9,
+     "removed": 6
+    }
+   ],
+   "functions": [
+    "pptp_xmit"
+   ],
+   "lines_changed": 15,
+   "diff_excerpt": "@@ -159,9 +159,7 @@ static int pptp_xmit(struct ppp_channel *chan, struct sk_buff *skb)\n \tint len;\n \tunsigned char *data;\n \t__u32 seq_recv;\n-\n-\n-\tstruct rtable *rt;\n+\tstruct rtable *rt = NULL;\n \tstruct net_device *tdev;\n \tstruct iphdr  *iph;\n \tint    max_headroom;\n@@ -179,16 +177,20 @@ static int pptp_xmit(struct ppp_channel *chan, struct sk_buff *skb)\n \n \tif (skb_headroom(skb) < max_headroom || skb_cloned(skb) || skb_shared(skb)) {\n \t\tstruct sk_buff *new_skb = skb_realloc_headroom(skb, max_headroom);\n-\t\tif (!new_skb) {\n-\t\t\tip_rt_put(rt);\n+\n+\t\tif (!new_skb)\n \t\t\tgoto tx_error;\n-\t\t}\n+\n \t\tif (skb->sk)\n \t\t\tskb_set_owner_w(new_skb, skb->sk);\n \t\tconsume_skb(skb);\n \t\tskb = new_skb;\n \t}\n \n+\t/* Ensure we can safely access protocol field and LCP code */\n+\tif (!pskb_may_pull(skb, 3))\n[… excerpt truncated — full change at the source link]",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 1,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=afad90ffc8645324afe5",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=de9c4861fb42f0cd72da844c3c34f692d5895b7b"
+  }
+ },
+ {
+  "bug_id": "7ed9d47e15e88581dc5b",
+  "title": "KMSAN: uninit-value in xfrm_state_find (4)",
+  "category": "uninit",
+  "category_name": "Use of uninitialized memory",
+  "matched_categories": [
+   "uninit"
+  ],
+  "subsystem": "net/xfrm",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-05-17",
+  "fix_date": "2025-06-11",
+  "days_to_fix": 25,
+  "call_trace_functions": [
+   "xfrm_state_find",
+   "xfrm_resolve_and_create_bundle",
+   "xfrm_lookup_with_ifid",
+   "xfrm_lookup_route",
+   "ip_route_output_flow",
+   "tcp_v4_connect"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "94d077c331730510d5611b438640a292097341f0",
+   "title": "xfrm: state: initialize state_ptrs earlier in xfrm_state_find",
+   "fixes": [
+    {
+     "hash": "e952837f3ddb",
+     "title": "xfrm: state: fix out-of-bounds read during lookup"
+    }
+   ],
+   "files": [
+    {
+     "path": "net/xfrm/xfrm_state.c",
+     "added": 2,
+     "removed": 2
+    }
+   ],
+   "functions": [
+    "xfrm_state_find"
+   ],
+   "lines_changed": 4,
+   "diff_excerpt": "@@ -1389,6 +1389,8 @@ xfrm_state_find(const xfrm_address_t *daddr, const xfrm_address_t *saddr,\n \tsequence = read_seqcount_begin(&net->xfrm.xfrm_state_hash_generation);\n \n \trcu_read_lock();\n+\txfrm_hash_ptrs_get(net, &state_ptrs);\n+\n \thlist_for_each_entry_rcu(x, &pol->state_cache_list, state_cache) {\n \t\tif (x->props.family == encap_family &&\n \t\t    x->props.reqid == tmpl->reqid &&\n@@ -1429,8 +1431,6 @@ xfrm_state_find(const xfrm_address_t *daddr, const xfrm_address_t *saddr,\n \telse if (acquire_in_progress) /* XXX: acquire_in_progress should not happen */\n \t\tWARN_ON(1);\n \n-\txfrm_hash_ptrs_get(net, &state_ptrs);\n-\n \th = __xfrm_dst_hash(daddr, saddr, tmpl->reqid, encap_family, state_ptrs.hmask);\n \thlist_for_each_entry_rcu(x, state_ptrs.bydst + h, bydst) {\n #ifdef CONFIG_XFRM_OFFLOAD\n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 1,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=7ed9d47e15e88581dc5b",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=94d077c331730510d5611b438640a292097341f0"
+  }
+ },
+ {
+  "bug_id": "f02fb9e43bd85c6c66ae",
+  "title": "WARNING in ip_mr_output",
+  "category": "assert",
+  "category_name": "Kernel assertions (WARN / BUG_ON)",
+  "matched_categories": [
+   "assert"
+  ],
+  "subsystem": "net/ipv4",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-06-18",
+  "fix_date": "2025-06-28",
+  "days_to_fix": 10,
+  "call_trace_functions": [
+   "igmp_send_report",
+   "igmp_timer_expire",
+   "call_timer_fn",
+   "__run_timer_base",
+   "run_timer_softirq",
+   "handle_softirqs"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "beead7eea896e5bc803027d1f3e0d0f9c3b9d196",
+   "title": "net: ipv4: guard ip_mr_output() with rcu",
+   "fixes": [
+    {
+     "hash": "35bec72a24ac",
+     "title": "net: ipv4: Add ip_mr_output()"
+    }
+   ],
+   "files": [
+    {
+     "path": "net/ipv4/ipmr.c",
+     "added": 2,
+     "removed": 2
+    }
+   ],
+   "functions": [
+    "ip_mr_output"
+   ],
+   "lines_changed": 4,
+   "diff_excerpt": "@@ -2299,7 +2299,8 @@ int ip_mr_output(struct net *net, struct sock *sk, struct sk_buff *skb)\n \tstruct mr_table *mrt;\n \tint vif;\n \n-\tWARN_ON_ONCE(!rcu_read_lock_held());\n+\tguard(rcu)();\n+\n \tdev = rt->dst.dev;\n \n \tif (IPCB(skb)->flags & IPSKB_FORWARDED)\n@@ -2313,7 +2314,6 @@ int ip_mr_output(struct net *net, struct sock *sk, struct sk_buff *skb)\n \tif (IS_ERR(mrt))\n \t\tgoto mc_output;\n \n-\t/* already under rcu_read_lock() */\n \tcache = ipmr_cache_find(mrt, ip_hdr(skb)->saddr, ip_hdr(skb)->daddr);\n \tif (!cache) {\n \t\tvif = ipmr_find_vif(mrt, dev);\n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 1,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=f02fb9e43bd85c6c66ae",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=beead7eea896e5bc803027d1f3e0d0f9c3b9d196"
+  }
+ },
+ {
+  "bug_id": "3a1878433bc1cb97b42a",
+  "title": "WARNING in indx_insert_into_buffer (3)",
+  "category": "assert",
+  "category_name": "Kernel assertions (WARN / BUG_ON)",
+  "matched_categories": [
+   "assert"
+  ],
+  "subsystem": "fs/ntfs3",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-10-05",
+  "fix_date": "2025-11-03",
+  "days_to_fix": 29,
+  "call_trace_functions": [
+   "indx_insert_entry",
+   "ni_add_name",
+   "ni_rename",
+   "ntfs_rename",
+   "vfs_rename",
+   "do_renameat2"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "c3856bb499eae0cd5773b609ee9aa8a0e6e42b6c",
+   "title": "ntfs3: avoid memcpy size warning",
+   "fixes": [],
+   "files": [
+    {
+     "path": "fs/ntfs3/index.c",
+     "added": 2,
+     "removed": 1
+    }
+   ],
+   "functions": [
+    "indx_insert_into_buffer"
+   ],
+   "lines_changed": 3,
+   "diff_excerpt": "@@ -1924,7 +1924,8 @@ indx_insert_into_buffer(struct ntfs_index *indx, struct ntfs_inode *ni,\n \t\t * Undo critical operations.\n \t\t */\n \t\tindx_mark_free(indx, ni, new_vbn >> indx->idx2vbn_bits);\n-\t\tmemcpy(hdr1, hdr1_saved, used1);\n+\t\tunsafe_memcpy(hdr1, hdr1_saved, used1,\n+\t\t\t      \"There are entries after the structure\");\n \t\tindx_write(indx, ni, n1, 0);\n \t}\n \n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 1,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=3a1878433bc1cb97b42a",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=c3856bb499eae0cd5773b609ee9aa8a0e6e42b6c"
+  }
+ },
+ {
+  "bug_id": "9921e319bd6168140b40",
+  "title": "WARNING: refcount bug in process_scheduled_works",
+  "category": "assert",
+  "category_name": "Kernel assertions (WARN / BUG_ON)",
+  "matched_categories": [
+   "assert"
+  ],
+  "subsystem": "drivers/md",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-07-29",
+  "fix_date": "2025-08-04",
+  "days_to_fix": 6,
+  "call_trace_functions": [
+   "process_scheduled_works",
+   "worker_thread",
+   "kthread",
+   "ret_from_fork",
+   "ret_from_fork_asm"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "1df1fc845d221eb646539836dbf509eb96b41afd",
+   "title": "md: fix create on open mddev lifetime regression",
+   "fixes": [
+    {
+     "hash": "9e59d609763f",
+     "title": "md: call del_gendisk in control path"
+    }
+   ],
+   "files": [
+    {
+     "path": "drivers/md/md.c",
+     "added": 6,
+     "removed": 0
+    }
+   ],
+   "functions": [
+    "__mddev_put"
+   ],
+   "lines_changed": 6,
+   "diff_excerpt": "@@ -636,6 +636,12 @@ static void __mddev_put(struct mddev *mddev)\n \t    mddev->ctime || mddev->hold_active)\n \t\treturn;\n \n+\t/*\n+\t * If array is freed by stopping array, MD_DELETED is set by\n+\t * do_md_stop(), MD_DELETED is still set here in case mddev is freed\n+\t * directly by closing a mddev that is created by create_on_open.\n+\t */\n+\tset_bit(MD_DELETED, &mddev->flags);\n \t/*\n \t * Call queue_work inside the spinlock so that flush_workqueue() after\n \t * mddev_find will succeed in waiting for the work to be done.\n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 2
+  },
+  "num_patch_versions": 1,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=9921e319bd6168140b40",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=1df1fc845d221eb646539836dbf509eb96b41afd"
+  }
+ },
+ {
+  "bug_id": "f73f203f8c9b19037380",
+  "title": "WARNING in ieee80211_tdls_oper",
+  "category": "assert",
+  "category_name": "Kernel assertions (WARN / BUG_ON)",
+  "matched_categories": [
+   "assert"
+  ],
+  "subsystem": "net/mac80211",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-05-08",
+  "fix_date": "2025-07-25",
+  "days_to_fix": 78,
+  "call_trace_functions": [
+   "nl80211_tdls_oper",
+   "genl_family_rcv_msg_doit",
+   "genl_rcv_msg",
+   "netlink_rcv_skb",
+   "genl_rcv",
+   "netlink_unicast"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "16ecdab5446f15a61ec88eb0d23d25d009821db0",
+   "title": "wifi: mac80211: reject TDLS operations when station is not associated",
+   "fixes": [
+    {
+     "hash": "81dd2b882241",
+     "title": "mac80211: move TDLS data to mgd private part"
+    }
+   ],
+   "files": [
+    {
+     "path": "net/mac80211/tdls.c",
+     "added": 1,
+     "removed": 1
+    }
+   ],
+   "functions": [
+    "ieee80211_tdls_oper"
+   ],
+   "lines_changed": 2,
+   "diff_excerpt": "@@ -1422,7 +1422,7 @@ int ieee80211_tdls_oper(struct wiphy *wiphy, struct net_device *dev,\n \tif (!(wiphy->flags & WIPHY_FLAG_SUPPORTS_TDLS))\n \t\treturn -EOPNOTSUPP;\n \n-\tif (sdata->vif.type != NL80211_IFTYPE_STATION)\n+\tif (sdata->vif.type != NL80211_IFTYPE_STATION || !sdata->vif.cfg.assoc)\n \t\treturn -EINVAL;\n \n \tswitch (oper) {\n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 1,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=f73f203f8c9b19037380",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=16ecdab5446f15a61ec88eb0d23d25d009821db0"
+  }
+ },
+ {
+  "bug_id": "9201a61c060513d4be38",
+  "title": "kernel BUG in do_write_page",
+  "category": "assert",
+  "category_name": "Kernel assertions (WARN / BUG_ON)",
+  "matched_categories": [
+   "assert"
+  ],
+  "subsystem": "fs/f2fs",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2025-06-27",
+  "fix_date": "2025-07-10",
+  "days_to_fix": 13,
+  "call_trace_functions": [
+   "f2fs_outplace_write_data",
+   "f2fs_do_write_data_page",
+   "f2fs_write_single_data_page",
+   "f2fs_write_data_pages",
+   "do_writepages",
+   "filemap_fdatawrite"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "8f4688591d96be9a71c0ddfbf32032d55dd54cfa",
+   "title": "f2fs: fix to use f2fs_is_valid_blkaddr_raw() in do_write_page()",
+   "fixes": [
+    {
+     "hash": "70b6e8500431",
+     "title": "f2fs: do sanity check on fio.new_blkaddr in do_write_page()"
+    }
+   ],
+   "files": [
+    {
+     "path": "fs/f2fs/segment.c",
+     "added": 1,
+     "removed": 1
+    }
+   ],
+   "functions": [
+    "do_write_page"
+   ],
+   "lines_changed": 2,
+   "diff_excerpt": "@@ -3953,7 +3953,7 @@ static void do_write_page(struct f2fs_summary *sum, struct f2fs_io_info *fio)\n \t\tgoto out;\n \t}\n \n-\tf2fs_bug_on(fio->sbi, !f2fs_is_valid_blkaddr(fio->sbi,\n+\tf2fs_bug_on(fio->sbi, !f2fs_is_valid_blkaddr_raw(fio->sbi,\n \t\t\t\tfio->new_blkaddr, DATA_GENERIC_ENHANCE));\n \n \tif (GET_SEGNO(fio->sbi, fio->old_blkaddr) != NULL_SEGNO)\n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 1,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=9201a61c060513d4be38",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=8f4688591d96be9a71c0ddfbf32032d55dd54cfa"
+  }
+ },
+ {
+  "bug_id": "e738404dcd14b620923c",
+  "title": "WARNING in ip_rt_bug (2)",
+  "category": "assert",
+  "category_name": "Kernel assertions (WARN / BUG_ON)",
+  "matched_categories": [
+   "assert"
+  ],
+  "subsystem": "net/ipv4",
+  "subsystem_source": "derived from the files the fix changed",
+  "first_crash_date": "2020-03-29",
+  "fix_date": "2026-02-10",
+  "days_to_fix": 2144,
+  "call_trace_functions": [
+   "ip_push_pending_frames",
+   "__icmp_send",
+   "ipv4_link_failure",
+   "arp_error_report",
+   "neigh_invalidate",
+   "neigh_timer_handler"
+  ],
+  "address_kind": null,
+  "fix": {
+   "hash": "81b84de32bb27ae1ae2eb9acf0420e9d0d14bf00",
+   "title": "xfrm: fix ip_rt_bug race in icmp_route_lookup reverse path",
+   "fixes": [
+    {
+     "hash": "8b7817f3a959",
+     "title": "[IPSEC]: Add ICMP host relookup support"
+    }
+   ],
+   "files": [
+    {
+     "path": "net/ipv4/icmp.c",
+     "added": 15,
+     "removed": 0
+    }
+   ],
+   "functions": [
+    "icmp_route_lookup"
+   ],
+   "lines_changed": 15,
+   "diff_excerpt": "@@ -554,6 +554,21 @@ static struct rtable *icmp_route_lookup(struct net *net, struct flowi4 *fl4,\n \t\t/* steal dst entry from skb_in, don't drop refcnt */\n \t\tskb_dstref_steal(skb_in);\n \t\tskb_dstref_restore(skb_in, orefdst);\n+\n+\t\t/*\n+\t\t * At this point, fl4_dec.daddr should NOT be local (we\n+\t\t * checked fl4_dec.saddr above). However, a race condition\n+\t\t * may occur if the address is added to the interface\n+\t\t * concurrently. In that case, ip_route_input() returns a\n+\t\t * LOCAL route with dst.output=ip_rt_bug, which must not\n+\t\t * be used for output.\n+\t\t */\n+\t\tif (!err && rt2 && rt2->rt_type == RTN_LOCAL) {\n+\t\t\tnet_warn_ratelimited(\"detected local route for %pI4 during ICMP sending, src %pI4\\n\",\n+\t\t\t\t\t     &fl4_dec.daddr, &fl4_dec.saddr);\n+\t\t\tdst_release(&rt2->dst);\n+\t\t\terr = -EINVAL;\n+\t\t}\n \t}\n \n \tif (err)\n-- \ncgit 1.2.3-korg\n",
+   "bugs_in_shard": 1
+  },
+  "num_patch_versions": 4,
+  "has_discussion": true,
+  "links": {
+   "syzbot": "https://syzkaller.appspot.com/bug?extid=e738404dcd14b620923c",
+   "commit": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=81b84de32bb27ae1ae2eb9acf0420e9d0d14bf00"
+  }
+ }
+]

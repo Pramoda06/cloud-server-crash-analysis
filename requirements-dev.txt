@@ -1,0 +1,2 @@
+# Only needed to (re)build the case-study subset from the raw SyzFix shard
+pyarrow>=14

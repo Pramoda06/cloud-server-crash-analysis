@@ -1,0 +1,333 @@
+{% extends "base.html" %}
+{% block title %}Deadlock Lab{% endblock %}
+{% block content %}
+<div class="page wide">
+  <div class="page-head">
+    <div>
+      <div class="crumbs">OS Labs</div>
+      <h1>Deadlock Lab</h1>
+      <div class="q">Build a circular wait, detect it, recover — then prevent and avoid it.</div>
+    </div>
+    <div class="head-actions"><span id="hPill"></span></div>
+  </div>
+
+  <!-- 1. build -->
+  <section class="card dl-build">
+    <div class="dl-build-row">
+      <div class="dl-step"><span class="step-n">1</span><div><b>Start from an example</b><div class="small muted">or build from scratch below</div></div></div>
+      <div class="chips" id="examples">
+        <button type="button" data-ex="two">Two processes, two locks</button>
+        <button type="button" data-ex="three">Three-process cycle</button>
+        <button type="button" data-ex="multi">Cycle, but no deadlock</button>
+        <button type="button" data-ex="banker">Banker's algorithm</button>
+      </div>
+      <label class="help-toggle" style="margin:0 0 0 auto" title="When on, a transaction that holds resources and is not waiting finishes after 5 s and releases them — the assumption the detection algorithm makes"><input type="checkbox" id="setAuto"> Transactions finish on their own (5 s)</label>
+      <button type="button" class="btn btn-ghost btn-sm" id="btnReset">Reset lab</button>
+    </div>
+    <div class="dl-build-row">
+      <div class="dl-step"><span class="step-n">2</span><div><b>Add to the experiment</b></div></div>
+      <form class="inline-form" id="fProc" autocomplete="off">
+        <label>Process <input type="text" id="pName" placeholder="P4" maxlength="8" size="6" aria-label="Process name"></label>
+        <button type="submit" class="btn btn-ghost btn-sm">+ Add process</button>
+      </form>
+      <form class="inline-form" id="fRes" autocomplete="off">
+        <label>Resource <input type="text" id="rId" placeholder="R1" maxlength="8" size="5" aria-label="Resource id"></label>
+        <label><input type="text" id="rLabel" placeholder="name (optional)" maxlength="40" size="14" aria-label="Resource name"></label>
+        <label>instances <input type="number" id="rInst" value="1" min="1" max="12" style="width:58px" aria-label="Number of instances"></label>
+        <button type="submit" class="btn btn-ghost btn-sm">+ Add resource</button>
+      </form>
+    </div>
+  </section>
+
+  <div class="dl-main">
+    <!-- graph + verdict -->
+    <section class="card">
+      <div class="card-head"><h2>Resource-allocation graph</h2><span class="aside" id="dlVerdict"></span></div>
+      <div id="rag" class="rag-box"></div>
+      <div class="rag-legend">
+        <span><svg width="34" height="10" aria-hidden="true"><line x1="0" y1="5" x2="30" y2="5" class="lg-held"/></svg>resource → process: <b>allocated</b></span>
+        <span><svg width="34" height="10" aria-hidden="true"><line x1="0" y1="5" x2="30" y2="5" class="lg-wait"/></svg>process → resource: <b>requested</b> (waiting)</span>
+        <span><i class="lg-dot"></i>one instance (filled = allocated)</span>
+        <span><i class="lg-dead"></i>deadlocked</span>
+      </div>
+      <div class="explain" id="explain"></div>
+    </section>
+
+    <!-- detect + recover -->
+    <div class="dl-side">
+      <section class="card">
+        <div class="card-head"><h2>Detect</h2><button type="button" class="btn btn-primary btn-sm" id="btnDetect" style="margin-left:auto">Detect deadlock</button></div>
+        <div id="detect"></div>
+      </section>
+      <section class="card">
+        <div class="card-head"><h2>Recover</h2><span class="aside">after detection</span></div>
+        <div id="recover"></div>
+      </section>
+      <section class="card">
+        <div class="card-head"><h2>Prevent or avoid</h2><span class="aside">policies, before it happens</span></div>
+        <label class="toggle-row"><input type="checkbox" id="setOrder"><span><b>Prevention · lock ordering</b><span class="small muted">Requests must follow <span class="mono" id="orderTxt">A &lt; B &lt; C</span>, all instances at once. Circular wait becomes impossible.</span></span></label>
+        <label class="toggle-row"><input type="checkbox" id="setAvoid"><span><b>Avoidance · Banker's algorithm</b><span class="small muted">Every process declares a maximum claim. A request is granted only if the state stays <i>safe</i>.</span></span></label>
+        <form class="inline-form max-form" id="fMax" autocomplete="off">
+          <label>Max claim of <select id="mProc" aria-label="Process"></select></label>
+          <input type="text" id="mVal" placeholder="e.g. A=1, T=4" size="12" aria-label="Maximum claim">
+          <button type="submit" class="btn btn-ghost btn-sm">Declare</button>
+        </form>
+        <div id="banker" class="small" style="margin-top:10px"></div>
+      </section>
+    </div>
+  </div>
+
+  <!-- tables -->
+  <section class="card flush section">
+    <div class="card-head"><h2>Processes</h2><span class="aside">transactions that use the resources · request, release, terminate, restart</span></div>
+    <div id="ptab"></div>
+  </section>
+  <div class="two-col section">
+    <section class="card flush">
+      <div class="card-head"><h2>Resources</h2><span class="aside">● allocated instance · ○ free instance</span></div>
+      <div id="rtab"></div>
+    </section>
+    <section class="card">
+      <div class="card-head"><h2>Coffman conditions</h2><span class="aside">all four must hold for a deadlock</span></div>
+      <ul class="coffman3" id="coff"></ul>
+      <details class="learn"><summary>Learn more · waiting vs circular wait vs deadlock</summary>
+        <ul class="clean small">
+          <li><b>Waiting</b> — a process is blocked until a resource is free. Normal, and it usually ends.</li>
+          <li><b>Cycle in the graph</b> — P1 waits for P2 … waits for P1. With <i>single-instance</i> resources a cycle <b>is</b> a deadlock.</li>
+          <li>With <i>multiple instances</i> a cycle is only a warning sign: another process may free an instance (try “Cycle, but no deadlock”).</li>
+          <li><b>Deadlock</b> — a set of processes that can never finish, because each waits for something only another member can release.</li>
+          <li><b>Safe state</b> — some order lets every process get its maximum claim and finish. <b>Unsafe</b> is not yet a deadlock, but it can become one.</li>
+        </ul></details>
+    </section>
+  </div>
+  <details class="learn section"><summary>How this lab works · the four ways to handle deadlock</summary>
+    <ul class="clean small">
+      <li><b>Prevention</b> (by design) — lock ordering breaks <i>circular wait</i>. <b>Avoidance</b> (at each request) — Banker's algorithm refuses unsafe grants.
+        <b>Detection</b> (every 0.5 s sample) — the several-instance algorithm. <b>Recovery</b> (after detection) — terminate a victim or pre-empt a resource.</li>
+      <li>Only <b>transaction</b> processes take locks; a blocked process waits for one request at a time; freed instances go to waiters in FIFO order.</li>
+      <li>Detection: <span class="mono">Work = Available</span>; finish any process whose request ≤ Work and add back its allocation. Processes that can never finish are deadlocked.</li>
+      <li>The detector raises <b>WARNING</b> as soon as a deadlock exists and <b>CRITICAL</b> after it persists 3 s. Resources A and B are also used by web requests, so a deadlock on them slows and fails the simulated service.</li>
+    </ul></details>
+
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(async function () {
+  await LAB.loadMeta();
+  const $ = OS.$, esc = OS.esc;
+  const act = (b, quiet) => LAB.post("/api/lab/action", b).then(r => { if (!quiet) LAB.toast(r.result); return r; });
+  const short = n => String(n).split(" ").pop();
+  let last = null;
+
+  /* ---------------- build */
+  $("examples").addEventListener("click", e => { const b = e.target.closest("button[data-ex]"); if (b) act({ action: "dl_example", which: b.dataset.ex }); });
+  $("btnReset").addEventListener("click", () => act({ action: "dl_reset" }));
+  $("fProc").addEventListener("submit", e => { e.preventDefault(); act({ action: "dl_add_process", name: $("pName").value }).then(() => ($("pName").value = "")); });
+  $("fRes").addEventListener("submit", e => { e.preventDefault(); act({ action: "dl_add_resource", rid: $("rId").value, label: $("rLabel").value, instances: Number($("rInst").value) }).then(() => { $("rId").value = ""; $("rLabel").value = ""; $("rInst").value = 1; }); });
+  $("btnDetect").addEventListener("click", () => act({ action: "dl_detect" }).then(() => {
+    const d = $("detect").querySelector("details"); if (d) d.open = true;          // show the algorithm's steps
+    $("detect").classList.remove("flash"); void $("detect").offsetWidth; $("detect").classList.add("flash");
+  }));
+  $("setOrder").addEventListener("change", e => LAB.post("/api/lab/settings", { lock_ordering: e.target.checked }).catch(() => (e.target.checked = !e.target.checked)));
+  $("setAuto").addEventListener("change", e => LAB.post("/api/lab/settings", { txn_autocomplete: e.target.checked }).catch(() => (e.target.checked = !e.target.checked)));
+  $("setAvoid").addEventListener("change", e => LAB.post("/api/lab/settings", { avoidance: e.target.checked }).catch(() => (e.target.checked = !e.target.checked)));
+
+  /* ---------------- process + resource tables (event delegation) */
+  document.addEventListener("click", e => {
+    const b = e.target.closest("button[data-a]"); if (!b || !b.closest("#ptab,#rtab,#recover")) return;
+    b.blur();                                             // let the tables redraw with the new state at once
+    const t = b.dataset.t, row = b.closest("tr, .rec-box");
+    const a = b.dataset.a;
+    if (a === "req") act({ action: "acquire", target: t, rid: row.querySelector(".selR").value, count: Number(row.querySelector(".cnt").value) });
+    if (a === "rel") { const v = row.querySelector(".selH").value; act(v ? { action: "release", target: t, rid: v } : { action: "release", target: t }); }
+    if (a === "kill") act({ action: "kill", target: t, signal: "SIGKILL" });
+    if (a === "restart") act({ action: "restart", target: t });
+    if (a === "rm") act({ action: "dl_remove_process", target: t });
+    if (a === "rmres") act({ action: "dl_remove_resource", rid: b.dataset.r });
+    if (a === "victim") act({ action: "resolve_deadlock", how: "victim", victim: $("vSel").value || null });
+    if (a === "preempt") act({ action: "resolve_deadlock", how: "preempt", victim: $("vSel").value || null, rid: $("vRes").value || null });
+  });
+
+  $("fMax").addEventListener("submit", e => {
+    e.preventDefault();
+    const mx = {}; $("mVal").value.split(/[,;\s]+/).filter(Boolean).forEach(x => { const [k, v] = x.split("="); if (k && v != null) mx[k.trim()] = Number(v); });
+    act({ action: "dl_set_max", target: $("mProc").value, max: mx });
+  });
+  $("mProc").addEventListener("change", () => { const p = last && last.processes.find(q => q.name === $("mProc").value); $("mVal").value = p ? Object.entries(p.max || {}).map(([k, v]) => `${k}=${v}`).join(", ") : ""; });
+  const txns = s => s.processes.filter(p => p.kind === "txn");
+  const holdTxt = (s, p) => s.resources.filter(r => r.alloc[p.pid]).map(r => r.instances > 1 ? `${r.id}×${r.alloc[p.pid]}` : r.id).join(", ");
+  function procTable(s, A) {
+    const dead = new Set(A.deadlocked);
+    const opts = s.resources.map(r => `<option value="${esc(r.id)}">${esc(r.id)}</option>`).join("");
+    const rows = txns(s).map(p => {
+      const nm = short(p.name), down = p.state === "TERMINATED" || p.state === "RESTARTING";
+      const held = s.resources.filter(r => r.alloc[p.pid]);
+      const mx = Object.entries(p.max || {}).map(([k, v]) => `${k}×${v}`).join(", ");
+      const acts = down ? (p.state === "TERMINATED" ? `<button type="button" class="btn btn-success" data-a="restart" data-t="${esc(p.name)}">Restart</button><button type="button" class="btn btn-ghost" data-a="rm" data-t="${esc(p.name)}">Remove</button>` : "")
+        : `<span class="req-ctl"><select class="selR" aria-label="Resource to request">${opts}</select><input class="cnt" type="number" min="1" max="12" value="1" aria-label="Instances"><button type="button" class="btn btn-ghost" data-a="req" data-t="${esc(p.name)}" ${p.state === "BLOCKED" ? "disabled title='already waiting for a request'" : ""}>Request</button></span>
+           <span class="req-ctl"><select class="selH" aria-label="Resource to release" ${held.length ? "" : "disabled"}><option value="">all</option>${held.map(r => `<option value="${esc(r.id)}">${esc(r.id)}</option>`).join("")}</select><button type="button" class="btn btn-ghost" data-a="rel" data-t="${esc(p.name)}" ${held.length ? "" : "disabled"}>Release</button></span>
+           <button type="button" class="btn btn-ghost bad" data-a="kill" data-t="${esc(p.name)}">Terminate</button>
+           ${!held.length && p.state !== "BLOCKED" ? `<button type="button" class="btn btn-ghost" data-a="rm" data-t="${esc(p.name)}">Remove</button>` : ""}`;
+      return `<tr class="${dead.has(nm) ? "is-dead" : ""}"><td><b>${esc(nm)}</b><span class="sub mono">PID ${p.pid}</span></td>
+        <td><span class="st ${p.state}">${p.state}</span>${p.info ? `<span class="sub">${esc(p.info)}</span>` : ""}</td>
+        <td class="mono">${holdTxt(s, p) || "—"}</td><td class="mono">${p.waiting_for ? `${esc(p.waiting_for)}×${p.req || 1}` : "—"}</td>
+        <td class="mono">${mx || "—"}</td><td><div class="acts">${acts}</div></td></tr>`;
+    }).join("");
+    return `<div class="tbl-wrap"><table class="data compact dl-tab"><thead><tr><th>Process</th><th>State</th><th>Holds</th><th>Waits for</th><th>Max claim</th><th>Actions</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">No processes — add one above.</td></tr>'}</tbody></table></div>`;
+  }
+  function resTable(s) {
+    const nm = pid => short((s.processes.find(p => p.pid === Number(pid)) || { name: pid }).name);
+    const rows = s.resources.map(r => {
+      const used = r.instances - r.available;
+      const dots = Array.from({ length: r.instances }, (_, i) => `<i class="${i < used ? "on" : ""}"></i>`).join("");
+      return `<tr><td><b class="mono">${esc(r.id)}</b><span class="sub">${esc(r.label)}${r.service ? " · used by web requests" : ""}</span></td>
+        <td><span class="inst">${dots}</span> <span class="mono small">${used}/${r.instances}</span></td>
+        <td class="mono small">${Object.entries(r.alloc).map(([p, n]) => `${nm(p)}${r.instances > 1 ? "×" + n : ""}`).join(", ") || "—"}</td>
+        <td class="mono small">${r.queue.map(nm).join(" → ") || "—"}</td>
+        <td>${!r.service && !used && !r.queue.length ? `<button type="button" class="btn btn-ghost btn-xs" data-a="rmres" data-r="${esc(r.id)}">Remove</button>` : ""}</td></tr>`;
+    }).join("");
+    return `<div class="tbl-wrap"><table class="data compact"><thead><tr><th>Resource</th><th>Instances in use</th><th>Held by</th><th>Queue</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  }
+
+  /* ---------------- resource-allocation graph (layout computed from the live state) */
+  function rag(s, A) {
+    const P = txns(s), R = s.resources;
+    const dead = new Set(A.deadlocked), cyc = new Set(A.any_cycle);
+    // many processes: stagger them on two rows and let the graph scroll sideways instead of shrinking the text
+    const two = P.length > 7, gap = two ? 82 : 120;
+    const W = Math.max(560, Math.max(two ? P.length * gap / 1.6 : P.length * gap, R.length * 100) + 80), H = two ? 360 : 330;
+    const py = 70, ry = two ? 290 : 255;
+    const pos = {};
+    P.forEach((p, i) => (pos["p" + p.pid] = [W / (P.length + 1) * (i + 1), two && i % 2 ? py + 70 : py]));
+    // place each resource under the processes that use it (barycentre), then spread to avoid overlap
+    const bx = R.map((r, i) => {
+      const users = P.filter(p => r.alloc[p.pid] || p.waiting_for === r.id).map(p => pos["p" + p.pid][0]);
+      return { r, x: users.length ? users.reduce((a, b) => a + b, 0) / users.length : W / (R.length + 1) * (i + 1) };
+    }).sort((a, b) => a.x - b.x);
+    const minGap = Math.min(110, (W - 60) / Math.max(1, R.length));
+    bx.forEach((o, i) => { if (i) o.x = Math.max(o.x, bx[i - 1].x + minGap); });
+    const over = bx.length ? bx[bx.length - 1].x - (W - 50) : 0;
+    if (over > 0) bx.forEach(o => (o.x -= over));
+    bx.forEach(o => { o.x = Math.max(50, o.x); pos["r" + o.r.id] = [o.x, ry]; });
+    const lines = [];
+    const edge = (a, b, kind, hot, label, bend) => {
+      const [x1, y1] = pos[a], [x2, y2] = pos[b];
+      const dx = x2 - x1, dy = y2 - y1, L = Math.hypot(dx, dy) || 1, nx = -dy / L, ny = dx / L;
+      const off = bend * 26;
+      const sx = x1 + dx / L * 32, sy = y1 + dy / L * 32, ex = x2 - dx / L * 34, ey = y2 - dy / L * 34;
+      const cx = (sx + ex) / 2 + nx * off, cy = (sy + ey) / 2 + ny * off;
+      const cls = `e ${kind}${hot ? " hot" : ""}`;
+      lines.push(`<path class="${cls}" d="M${sx.toFixed(1)},${sy.toFixed(1)} Q${cx.toFixed(1)},${cy.toFixed(1)} ${ex.toFixed(1)},${ey.toFixed(1)}" marker-end="url(#m-${hot ? "hot" : kind})"/>`);
+      if (label) lines.push(`<text class="el ${kind}${hot ? " hot" : ""}" x="${(cx + nx * 6).toFixed(1)}" y="${(cy + ny * 6 + 4).toFixed(1)}" text-anchor="middle">${label}</text>`);
+    };
+    R.forEach(r => Object.entries(r.alloc).forEach(([pid, n]) => {
+      if (!pos["p" + pid]) return;
+      const waits = P.find(p => p.pid === Number(pid));
+      edge("r" + r.id, "p" + pid, "held", dead.has(short(waits.name)) && P.some(q => q.waiting_for === r.id && dead.has(short(q.name))), r.instances > 1 ? "×" + n : "", 1);
+    }));
+    P.forEach(p => { if (p.waiting_for && pos["r" + p.waiting_for]) edge("p" + p.pid, "r" + p.waiting_for, "wait", dead.has(short(p.name)), (p.req || 1) > 1 ? "×" + p.req : "", 1); });
+    const nodes = P.map(p => {
+      const [x, y] = pos["p" + p.pid], nm = short(p.name);
+      const cls = `pn ${p.state}${dead.has(nm) ? " dead" : cyc.has(nm) ? " cyc" : ""}`;
+      return `<g class="${cls}"><circle cx="${x}" cy="${y}" r="27"/><text x="${x}" y="${y + 1}" text-anchor="middle" class="pl">${esc(nm)}</text><text x="${x}" y="${y + 15}" text-anchor="middle" class="ps">${p.state}</text></g>`;
+    }).join("") + R.map(r => {
+      const [x, y] = pos["r" + r.id], used = r.instances - r.available, n = r.instances;
+      const cols = Math.min(n, 6), rows = Math.ceil(n / 6), w = Math.max(64, cols * 11 + 18), h = 34 + rows * 11;
+      const dots = Array.from({ length: n }, (_, i) => `<circle cx="${x - (cols - 1) * 5.5 + (i % 6) * 11}" cy="${y + 7 + Math.floor(i / 6) * 11}" r="3.6" class="${i < used ? "on" : ""}"/>`).join("");
+      return `<g class="rn${r.service ? " svc" : ""}"><rect x="${x - w / 2}" y="${y - 22}" width="${w}" height="${h}" rx="7"/><text x="${x}" y="${y - 5}" text-anchor="middle" class="rl">${esc(r.id)}</text>${dots}</g>`;
+    }).join("");
+    const mk = id => `<marker id="m-${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="mk ${id}"/></marker>`;
+    return `<svg class="rag2" viewBox="0 0 ${W} ${H}" style="min-width:${Math.round(Math.min(W, 1400) * 0.85)}px" role="img" aria-label="Resource allocation graph: ${P.length} processes, ${R.length} resources"><defs>${mk("held")}${mk("wait")}${mk("hot")}</defs>${lines.join("")}${nodes}</svg>`;
+  }
+
+  /* ---------------- plain-language explanation */
+  function explain(s, A) {
+    const blocked = txns(s).filter(p => p.state === "BLOCKED");
+    if (A.deadlocked.length) {
+      const c = A.cycle.length ? A.cycle.concat(A.cycle[0]).join(" → ") : A.deadlocked.join(", ");
+      return `<div class="ex bad"><div class="ex-h">What happened</div><p><b>Deadlock.</b> ${esc(A.deadlocked.join(", "))} can never finish.</p>
+        <div class="ex-h">Why</div><ul class="clean"><li>Each one holds a resource and waits for another (circular wait: <span class="mono">${esc(c)}</span>).</li>
+        <li>No free instances are left that could break the wait${A.single_instance ? "" : " — the detection algorithm checked this"}.</li>
+        ${A.behind.length ? `<li>${esc(A.behind.join(", "))} also wait${A.behind.length > 1 ? "" : "s"}, but hold${A.behind.length > 1 ? "" : "s"} nothing, so ${A.behind.length > 1 ? "they are" : "it is"} stuck <i>behind</i> the deadlock, not part of it.</li>` : ""}</ul>
+        <div class="ex-h">How to recover</div><p>Terminate a victim, or pre-empt one of its resources (right).</p></div>`;
+    }
+    if (A.any_cycle.length) return `<div class="ex warn"><div class="ex-h">What happened</div><p><b>A cycle, but no deadlock.</b> ${esc(A.any_cycle.concat(A.any_cycle[0]).join(" → "))}</p>
+        <div class="ex-h">Why</div><ul class="clean"><li>A resource in the cycle has several instances.</li><li>A process outside the cycle can finish and return one, so everyone can eventually proceed (finish order: <span class="mono">${esc(A.reduction.join(", "))}</span>).</li></ul>
+        <div class="ex-h">What to learn</div><p>With multiple instances a cycle is necessary but not sufficient for deadlock.</p></div>`;
+    if (blocked.length) return `<div class="ex warn"><div class="ex-h">What happened</div><p><b>Waiting, not deadlocked.</b> ${esc(blocked.map(p => short(p.name)).join(", "))} ${blocked.length > 1 ? "wait" : "waits"} for a busy resource.</p>
+        <div class="ex-h">Why</div><ul class="clean"><li>The holder is not waiting for them, so it could finish and release. ${s.settings.txn_autocomplete ? "With <b>Transactions finish on their own</b> on, it will release within 5 s." : "Transactions here finish only when you press <b>Release</b> (or turn on <b>Transactions finish on their own</b>)."}</li>${blocked.some(p => /UNSAFE/.test(p.info)) ? "<li>The Banker's algorithm delayed a request because granting it would make the state unsafe.</li>" : ""}</ul></div>`;
+    return `<div class="ex ok"><div class="ex-h">What happened</div><p><b>No waiting.</b> Ask a process to request a resource that another one holds.</p></div>`;
+  }
+
+  /* ---------------- detection panel: the algorithm, step by step */
+  function detectPanel(s, A) {
+    const vec = v => Object.entries(v || {}).filter(([, n]) => n).map(([k, n]) => `${k}:${n}`).join(" ") || "0";
+    const avail = Object.entries(A.available).map(([k, n]) => `${k}:${n}`).join(" ");
+    const rows = A.matrix.map(m => `<tr class="${A.deadlocked.includes(m.name) ? "is-dead" : ""}"><td><b>${esc(m.name)}</b></td><td class="mono">${vec(m.alloc)}</td><td class="mono">${vec(m.request)}</td></tr>`).join("");
+    const steps = A.steps.map((x, i) => `<li><b>${esc(x.name)}</b> can finish (request ${vec(x.demand)} ≤ Work) → Work = <span class="mono">${vec(x.work_after)}</span></li>`).join("");
+    const verdict = A.deadlocked.length ? `<div class="verdict bad">Deadlocked: <b>${esc(A.deadlocked.join(", "))}</b></div>`
+      : A.any_cycle.length ? '<div class="verdict warn">Cycle found, but every process can finish → <b>no deadlock</b></div>'
+      : '<div class="verdict ok">Every process can finish → <b>no deadlock</b></div>';
+    return `${verdict}
+      <div class="small muted" style="margin:8px 0 4px">${A.single_instance ? "All resources have one instance, so a cycle in the wait-for graph is exactly a deadlock." : "Some resources have several instances, so the lab uses the detection algorithm (not just a cycle check)."}</div>
+      <details class="learn"><summary>Algorithm steps</summary>
+        <div class="small">Start: Work = Available = <span class="mono">${esc(avail || "—")}</span>. A process holding nothing is finished at once.</div>
+        <ol class="trace small">${steps || "<li>No holding process can finish.</li>"}</ol>
+        ${A.deadlocked.length ? `<div class="small">Left unfinished → <b>deadlocked</b>: ${esc(A.deadlocked.join(", "))}</div>` : ""}
+        <div class="tbl-wrap"><table class="data compact mat"><thead><tr><th>Process</th><th>Allocation</th><th>Request</th></tr></thead><tbody>${rows}</tbody></table></div>
+      </details>
+      <div class="small muted" style="margin-top:8px">Detector: ${LAB.pill(HEALTH_NAMES[s.rules.deadlock.confirmed], LEVEL_NAMES[s.rules.deadlock.confirmed])}${s.deadlock.age ? ` · deadlock age ${LAB.num(s.deadlock.age)} s` : ""}</div>`;
+  }
+  function recoverPanel(s, A) {
+    if (!A.deadlocked.length) return `<div class="small muted">Recovery is needed only after a deadlock is detected. Waiting processes will continue once the holder releases.</div>`;
+    const P = txns(s).filter(p => A.deadlocked.includes(short(p.name)));
+    const cost = p => s.resources.reduce((a, r) => a + (r.alloc[p.pid] || 0), 0);
+    const held = [...new Set(P.flatMap(p => p.holds))];
+    return `<div class="rec-box"><label class="bfield">Victim <select id="vSel"><option value="">auto (cheapest)</option>${P.map(p => `<option value="${esc(p.name)}">${esc(short(p.name))} — holds ${cost(p)} instance${cost(p) === 1 ? "" : "s"}</option>`).join("")}</select></label>
+      <div class="rec-opt"><button type="button" class="btn btn-danger btn-sm" data-a="victim">Terminate victim</button><span class="small muted">Aborts the process; all its resources are released. Its work is lost.</span></div>
+      <div class="rec-opt"><span class="req-ctl"><select id="vRes" aria-label="Resource to pre-empt"><option value="">auto</option>${held.map(r => `<option>${esc(r)}</option>`).join("")}</select><button type="button" class="btn btn-ghost btn-sm" data-a="preempt">Pre-empt resource</button></span><span class="small muted">Takes one resource away and rolls the victim back. Valid here because a transaction can be undone; real locks often cannot.</span></div>
+      <div class="small muted">Auto choice: fewest instances held (least work lost), newest on a tie. Choosing the same victim every time can cause <b>starvation</b>.</div></div>`;
+  }
+  function bankerPanel(s, A) {
+    const B = A.banker;
+    if (!B) return `<span class="muted">No maximum claims declared. Declare one per process above, or load the Banker's example.</span>`;
+    const vec = v => Object.entries(v || {}).filter(([, n]) => n).map(([k, n]) => `${k}:${n}`).join(" ") || "0";
+    const rows = A.matrix.map(m => `<tr><td><b>${esc(m.name)}</b></td><td class="mono">${vec(m.alloc)}</td><td class="mono">${vec(m.max)}</td><td class="mono">${vec(m.need)}</td></tr>`).join("");
+    return `${B.safe ? `<div class="verdict ok">SAFE — safe sequence <b class="mono">${esc(B.sequence.join(" → "))}</b></div>` : `<div class="verdict bad">UNSAFE — no order lets ${esc(B.stuck.join(", "))} finish</div>`}
+      ${B.declared ? "" : `<div class="small warn">Missing claims: ${esc(B.missing.join(", "))}</div>`}
+      <div class="tbl-wrap"><table class="data compact mat"><thead><tr><th>Process</th><th>Allocation</th><th>Max</th><th>Need</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="small muted">Need = Max − Allocation. Available: <span class="mono">${esc(Object.entries(A.available).map(([k, n]) => `${k}:${n}`).join(" "))}</span>. Unsafe ≠ deadlock: it means a deadlock <i>could</i> happen.</div>`;
+  }
+
+  function render(s) {
+    last = s;
+    const A = s.deadlock.analysis;
+    $("hPill").innerHTML = LAB.pill(s.health, s.health);
+    LAB.setHTML($("rag"), rag(s, A));
+    $("dlVerdict").innerHTML = A.deadlocked.length ? `<span class="flag bad">DEADLOCK · ${esc(A.cycle.concat(A.cycle[0] || []).join(" → "))}</span>`
+      : A.any_cycle.length ? '<span class="flag warn">cycle · no deadlock</span>' : '<span class="flag ok">no deadlock</span>';
+    LAB.setHTML($("explain"), explain(s, A));
+    const sig = JSON.stringify([s.processes.filter(p => p.kind === "txn").map(p => [p.pid, p.state, p.holds, p.waiting_for, p.max, p.info]), s.resources.map(r => [r.id, r.alloc, r.queue])]);
+    // pause a re-render only while the user is choosing in a dropdown or typing a number there —
+    // not on hover, and not because a just-clicked button still has focus (that froze the table)
+    const busy = el => { const a = document.activeElement; return !!a && el.contains(a) && (a.tagName === "SELECT" || a.tagName === "INPUT"); };
+    if ($("ptab").dataset.sig !== sig && !busy($("ptab"))) { $("ptab").innerHTML = procTable(s, A); $("ptab").dataset.sig = sig; }
+    if ($("rtab").dataset.sig !== sig) { $("rtab").innerHTML = resTable(s); $("rtab").dataset.sig = sig; }
+    LAB.setHTML($("detect"), detectPanel(s, A));
+    const rsig = sig + A.deadlocked.join();
+    if ($("recover").dataset.sig !== rsig && !busy($("recover"))) { $("recover").innerHTML = recoverPanel(s, A); $("recover").dataset.sig = rsig; }
+    LAB.setHTML($("banker"), bankerPanel(s, A));
+    const names = txns(s).map(p => p.name).join();
+    if ($("mProc").dataset.sig !== names) { const cur = $("mProc").value; $("mProc").innerHTML = txns(s).map(p => `<option value="${esc(p.name)}">${esc(short(p.name))}</option>`).join(""); if (cur) $("mProc").value = cur; $("mProc").dataset.sig = names; }
+    $("setOrder").checked = s.settings.lock_ordering; $("setAvoid").checked = s.settings.avoidance; $("setAuto").checked = s.settings.txn_autocomplete;
+    $("orderTxt").textContent = A.order;
+    const d = s.deadlock, C = [["mutual_exclusion", "Mutual exclusion", "a resource instance is used by one process at a time"], ["hold_and_wait", "Hold and wait", "a process holds one resource while waiting for another"], ["no_preemption", "No pre-emption", "resources are released only voluntarily"], ["circular_wait", "Circular wait", "a closed chain of processes, each waiting for the next"]];
+    LAB.setHTML($("coff"), C.map(([k, t, h]) => `<li class="${d.coffman[k] ? "on" : ""}"><span class="ck" aria-hidden="true">${d.coffman[k] ? "✓" : "–"}</span><div><b>${t}</b> <span class="small muted">${d.coffman[k] ? "holds now" : "not now"}</span><div class="small muted">${h}</div></div></li>`).join(""));
+
+  }
+  LAB.onState(render);
+  LAB.start();
+})();
+</script>
+{% endblock %}
