@@ -5,54 +5,33 @@
   <div class="page-head">
     <div>
       <h1>Overview</h1>
-      <div class="q">State of the simulated cloud servers in this laboratory. Select a server, then control it in the System Lab
-        and observe how CPU, memory, disk and network conditions lead to failure.</div>
-    </div>
-    <div class="head-actions">
-      <a class="btn btn-primary btn-sm" href="/lab">Open System Lab →</a>
+      <div class="q">{{ server.name }} · {{ server.vcpus }} vCPU · {{ (server.ram_mb / 1024)|int }} GB RAM · {{ server.storage }} · simulated</div>
     </div>
   </div>
 
-  <!-- summary metrics of the selected server -->
-  <div class="metric-grid" id="ovMetrics"></div>
-
-  <!-- selected server (2/3) + how to use the lab (1/3) -->
-  <div class="split stretch section">
-    <section class="card">
-      <div class="card-head"><h2>{{ server.id }} <span class="muted" style="font-weight:500">· {{ server.name }}</span></h2>
-        <span class="aside" id="ovStatus"></span></div>
-      <dl class="kv tight">
-        <dt>Server type</dt><dd>{{ server.server_type }} · {{ server.role }} role</dd>
-        <dt>Operating system</dt><dd>{{ server.os }} · kernel {{ server.kernel }}</dd>
-        <dt>Platform</dt><dd>{{ server.vcpus }} vCPU · {{ (server.ram_mb / 1024)|int }} GB RAM · {{ server.disk }}</dd>
-        <dt>Filesystem / network</dt><dd>{{ server.filesystem }} · {{ server.network_type }}</dd>
-        <dt>Region</dt><dd>{{ server.region }}</dd>
-        <dt>Current activity</dt><dd id="ovExp">Normal operation</dd>
-        <dt>Last run</dt><dd id="ovLast">No runs yet</dd>
-        <dt>Primary finding</dt><dd id="ovFinding">—</dd>
-      </dl>
-    </section>
-    <section class="card">
-      <div class="card-head"><h2>How to use the lab</h2></div>
-      <ol class="steps">
-        <li>Open the <b>System Lab</b> — the server starts healthy.</li>
-        <li>Raise <b>CPU workload</b> and watch <b>System Health</b> change.</li>
-        <li>Use <b>Inject Sudden Stress</b> for a one-step spike.</li>
-        <li>See the root cause in <b>Failure Analysis</b>.</li>
-        <li>Click <b>Recovery</b> to restore the baseline.</li>
-      </ol>
-      <p class="small muted" style="margin:16px 0 0">All values are simulated — nothing on this computer is stressed.</p>
-    </section>
-  </div>
-
-  <!-- server table -->
-  <section class="card flush section">
-    <div class="card-head"><h2>Servers</h2>
-      <span class="aside"><span class="refresh-note" id="srvNote"></span></span>
-      <button type="button" class="btn btn-primary btn-sm" id="btnAddServer">+ Add Server</button>
-      <p class="cd">Live simulated utilisation of every configured server. Selecting a server makes every page work on it.</p></div>
-    <div id="serverList"></div>
+  <section class="card hero2" id="dashHero">
+    <div class="ring-wrap"><svg class="ring" viewBox="0 0 120 120" aria-hidden="true"><circle class="ring-bg" cx="60" cy="60" r="52"/><circle class="ring-fg" id="ringFg" cx="60" cy="60" r="52"/></svg>
+      <div class="ring-c"><b id="ringV">—</b><span>requests served</span></div></div>
+    <div class="hero2-main">
+      <div class="dh-big NEUTRAL" id="dhBig"><span class="dot"></span><span>—</span></div>
+      <div class="dh-why" id="dhWhy">Connecting to the simulator…</div>
+      <div class="dh-actions" id="dhActions"></div>
+    </div>
+    <div class="vitals2" id="dhVitals"></div>
   </section>
+
+  <div class="ov-cols">
+    <section class="card"><div class="card-head"><h2>Operating-system subsystems</h2><span class="aside">what the detector sees now</span></div>
+      <ul class="rules" id="ovRules"></ul></section>
+    <section class="card"><div class="card-head"><h2>Recent events</h2><a class="aside" href="/lab">Control Room →</a></div>
+      <div class="mini-ev" id="ovEv"></div></section>
+  </div>
+
+  <details class="card flush section" id="srvBox">
+    <summary class="card-head"><h2>Manage servers</h2><span class="aside"><span class="refresh-note" id="srvNote"></span></span>
+      <button type="button" class="btn btn-ghost btn-sm" id="btnAddServer">+ Add server</button></summary>
+    <div id="serverList"></div>
+  </details>
 </div>
 
 <!-- Add Server: every technical value is a predefined option -->
@@ -148,7 +127,7 @@
       loadState = "error";
       $("srvNote").textContent = servers.length ? "Connection lost — showing the last known values" : "";
     }
-    renderServers(); renderFleet();
+    renderServers();
   }
   $("serverList").addEventListener("click", e => {
     if (e.target.closest("#btnRetry")) { loadServers(); return; }
@@ -162,48 +141,56 @@
     else if (b.dataset.act === "remove") openRemove(s);
   });
 
-  /* ------------------------------------------------- summary metric cards */
-  const cur = () => servers.find(s => s.db_id === selected) || servers[0] || {};
-  let live = null;            // latest /api/lab/state values of the selected server
-  function metric(label, v, lvl, sub, unit) {
-    return `<div class="metric l${lvl}"><div class="mk">${label}<span class="tag">simulated</span></div>
-      <div class="mv">${v}${unit ? `<span class="u">${unit}</span>` : ""}</div>
-      ${sub}</div>`;
-  }
-  function renderFleet() {
-    const s = cur();
-    const v = live || { cpu_util: s.cpu_util, mem_util: s.mem_util, disk_util: s.disk_util };
-    const bar = (x, l) => `<div class="meter l${l}"><i style="width:${Math.min(100, x || 0)}%"></i></div>`;
-    const lv = k => (live && window.LAB && LAB.meta ? Math.min(3, LAB.levelOf(k, v[k])) : lvlPct(v[k]));
-    const online = servers.filter(x => x.status !== "OFFLINE").length;
-    const issues = servers.filter(x => !["HEALTHY", "OFFLINE"].includes(x.status)).length;
-    const n = x => (x == null ? "—" : Number(x).toFixed(1));
-    $("ovMetrics").innerHTML =
-      metric("CPU usage", n(v.cpu_util), lv("cpu_util"), bar(v.cpu_util, lv("cpu_util")), "%") +
-      metric("Memory usage", n(v.mem_util), lv("mem_util"), bar(v.mem_util, lv("mem_util")), "%") +
-      metric("Disk usage", n(v.disk_util), lv("disk_util"), bar(v.disk_util, lv("disk_util")), "%") +
-      `<div class="metric ${issues ? "l1" : ""}"><div class="mk">Servers online</div><div class="mv">${online}<span class="u">/ ${servers.length}</span></div>
-        <div class="ms">${issues ? `${issues} server${issues > 1 ? "s" : ""} need attention` : "All online servers healthy"}</div></div>`;
-  }
-  renderServers(); renderFleet();
+  /* ------------------------------------------------- live state of the selected server */
+  renderServers();
   setInterval(loadServers, 3000);
-
-  /* ------------------------------------------- live state of the selected server */
   try { await LAB.loadMeta(); } catch (e) { return; }
-  LAB.onState(st => {
-    live = st.values;
-    $("ovStatus").innerHTML = LAB.pill(st.health, st.health);
-    const p = st.status.primary[0];
-    $("ovExp").innerHTML = st.runner ? `Experiment running: <b>${OS.esc(st.runner.name)}</b> — <a href="/monitor">watch live →</a>` : st.recording ? "Recording" : p ? `<b>${OS.esc(p.name)}</b> — <a href="/analysis">why? →</a>` : "Normal operation";
-    renderFleet();
+  const VITALS = [["cpu_util", "CPU"], ["mem_util", "Memory"], ["response_ms", "Response time"], ["error_rate", "Errors"]];
+  const RULE_ORDER = ["cpu", "memory", "disk", "disk_space", "network", "process", "deadlock", "service", "kernel"];
+  const SHORT = { cpu: ["CPU", "scheduling"], memory: ["Memory", "virtual memory"], disk: ["Disk I/O", "I/O scheduling"], disk_space: ["Disk space", "file system"],
+    network: ["Network", "TCP / IP"], process: ["Processes", "process management"], deadlock: ["Locks", "synchronization"], service: ["Service", "requests & workers"], kernel: ["Kernel", "core of the OS"] };
+  const LV = ["OK", "Warning", "Degraded", "Critical", "Failed"];
+  $("dhActions").addEventListener("click", e => {
+    if (e.target.closest("[data-demo-pick]")) window.DEMO.pick();
+    if (e.target.closest("#btnDashClean")) OS.api("/api/lab/clean", { method: "POST", body: "{}" }).then(() => LAB.toast("Server reset to its healthy starting state"));
+    if (e.target.closest("#btnDashDemo") && window.DEMO) DEMO.pick();
   });
-  LAB.start({ interval: 1500, full: false });
-  OS.api("/api/lab/runs").then(rows => {
-    if (!rows.length) return;
-    const r = rows[0];
-    $("ovLast").innerHTML = `<a href="/runs/${r.id}">#${r.id} · ${OS.esc(r.name)}</a> · ${OS.esc(r.created)} · worst ${LAB.pill(r.peak_health, r.peak_health)}`;
-    $("ovFinding").textContent = r.primary_failure || "No failure";
-  }).catch(() => {});
+  const C = 2 * Math.PI * 52;
+  $("ringFg").style.strokeDasharray = C;
+  let lastAct = null;
+  LAB.onState(st => {
+    const h = st.health, p = st.status.primary, K = st.kernel || {};
+    const av = st.values.availability;
+    $("ringFg").style.strokeDashoffset = C * (1 - Math.max(0, Math.min(100, av == null ? 0 : av)) / 100);
+    $("ringFg").setAttribute("class", "ring-fg " + h);
+    $("ringV").textContent = av == null ? "—" : (av >= 99.95 ? "100" : av.toFixed(av >= 10 ? 1 : 2)) + "%";
+    $("dhBig").className = "dh-big " + h;
+    $("dhBig").innerHTML = `<span class="dot"></span><span>${OS.esc(h.charAt(0) + h.slice(1).toLowerCase())}</span>`;
+    const conc = p.length > 1 ? " (with " + p.slice(1).map(x => OS.esc(x.name)).join(", ") + ")" : "";
+    $("dhWhy").innerHTML = K.down ? `<b>Kernel ${OS.esc((K.stage || "").toLowerCase())}</b> — ${OS.esc(K.stage_text || "")}. No process can run until the reboot completes.`
+      : p.length ? `<b>${OS.esc(p[0].name)}</b>${conc} — ${OS.esc(p[0].via || "")}`
+      : st.last_recovery && st.last_recovery.status === "RECOVERING" ? "Recovering — every detection rule is checked on each sample."
+      : "All nine detection rules are below their warning thresholds.";
+    const act = h === "HEALTHY" ? "ok" : "bad";
+    if (act !== lastAct) {
+      lastAct = act;
+      $("dhActions").innerHTML = act === "ok"
+        ? `<a class="btn btn-primary" href="/lab">Inject a failure</a><button type="button" class="btn btn-ghost" data-demo-pick>Take the guided demo</button>`
+        : `<a class="btn btn-primary" href="/incident">Open the incident →</a><button type="button" class="btn btn-ghost" id="btnDashClean">Reset to healthy</button>`;
+    }
+    LAB.setHTML($("dhVitals"), VITALS.map(([k, label]) => {
+      const v = st.values[k], l = Math.min(3, LAB.levelOf(k, v));
+      return `<div class="vital l${l}"><div class="vk">${label}</div>
+        <div class="vv">${v == null ? "—" : LAB.num(v)}<span class="u">${OS.esc(LAB.unit(k) || "")}</span></div>${LAB.spark(k, 200, 28)}</div>`;
+    }).join(""));
+    LAB.setHTML($("ovRules"), RULE_ORDER.filter(r => st.rules[r]).map(r => {
+      const R = st.rules[r], l = R.confirmed, [nm, sub] = SHORT[r] || [R.name, ""];
+      return `<li class="rl l${l}" title="${OS.esc(R.name)}"><i></i><div><b>${OS.esc(nm)}</b><span>${OS.esc(sub)}</span></div><em>${LV[l]}</em></li>`;
+    }).join(""));
+    const ev = LAB.events.filter(e => ["DETECTION", "HEALTH", "STRESS", "RECOVERY", "KERNEL", "METASTABLE"].includes(e.kind)).slice(-7).reverse();
+    LAB.setHTML($("ovEv"), ev.length ? `<div class="ev-list">${ev.map(LAB.eventRow).join("")}</div>` : '<div class="calm">Nothing has happened yet. <a href="/lab">Inject a failure</a> in the Control Room to see the detector at work.</div>');
+  });
+  LAB.start({ interval: 1000, full: false });
 
   /* ------------------------------------------------------------ modals */
   function openModal(id) { $(id).hidden = false; }
@@ -292,8 +279,8 @@
     $("btnSaveServer").disabled = false;
   });
   function openAdd() { fillForm(); openModal("addModal"); setTimeout(() => $("fName").focus(), 30); }
-  $("btnAddServer").addEventListener("click", openAdd);
-  if (new URLSearchParams(location.search).get("add")) { history.replaceState(null, "", "/"); openAdd(); }
+  $("btnAddServer").addEventListener("click", e => { e.preventDefault(); openAdd(); });
+  if (new URLSearchParams(location.search).get("add")) { history.replaceState(null, "", "/"); $("srvBox").open = true; openAdd(); }
 })();
 </script>
 {% endblock %}

@@ -83,6 +83,17 @@ CREATE TABLE IF NOT EXISTS lab_snapshots (
     name      TEXT NOT NULL,
     data_json TEXT
 );
+-- added by the lab upgrade (additive, no existing table changes):
+-- recovery-strategy comparisons and kernel-panic experiments
+CREATE TABLE IF NOT EXISTS lab_records (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    server_id INTEGER,
+    created   TEXT NOT NULL,
+    kind      TEXT NOT NULL,              -- comparison | kernel | strategy
+    name      TEXT NOT NULL,
+    summary_json TEXT,
+    data_json TEXT
+);
 CREATE TABLE IF NOT EXISTS lab_programs (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
     created   TEXT NOT NULL,
@@ -210,6 +221,7 @@ class Store:
             n = c.execute("DELETE FROM experiments WHERE server_id=?", (sid,)).rowcount
             n += c.execute("DELETE FROM lab_runs WHERE server_id=?", (sid,)).rowcount
             c.execute("DELETE FROM lab_snapshots WHERE server_id=?", (sid,))
+            n += c.execute("DELETE FROM lab_records WHERE server_id=?", (sid,)).rowcount
             c.execute("DELETE FROM servers WHERE id=?", (sid,))
         return n
 
@@ -299,3 +311,37 @@ class Store:
     def delete_program(self, pid):
         with self.lock, self._conn() as c:
             return c.execute("DELETE FROM lab_programs WHERE id=?", (pid,)).rowcount
+
+    # -------------------------------------- comparisons / kernel experiments --
+    def save_record(self, server_id, kind, name, summary, data):
+        with self.lock, self._conn() as c:
+            return c.execute("INSERT INTO lab_records (server_id, created, kind, name, summary_json, data_json) "
+                             "VALUES (?,?,?,?,?,?)",
+                             (server_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), kind, name,
+                              json.dumps(summary), json.dumps(data))).lastrowid
+
+    def records(self, server_id=None, kind=None, limit=200):
+        q, args = "SELECT id, server_id, created, kind, name, summary_json FROM lab_records WHERE 1=1", []
+        if server_id is not None:
+            q += " AND server_id=?"
+            args.append(server_id)
+        if kind:
+            q += " AND kind=?"
+            args.append(kind)
+        with self._conn() as c:
+            rows = c.execute(q + " ORDER BY id DESC LIMIT ?", args + [limit]).fetchall()
+        return [dict(dict(r), summary=json.loads(r["summary_json"] or "{}"), summary_json=None) for r in rows]
+
+    def record(self, rid):
+        with self._conn() as c:
+            r = c.execute("SELECT * FROM lab_records WHERE id=?", (rid,)).fetchone()
+        if not r:
+            return None
+        d = dict(r)
+        d["summary"] = json.loads(d.pop("summary_json") or "{}")
+        d["data"] = json.loads(d.pop("data_json") or "{}")
+        return d
+
+    def delete_record(self, rid):
+        with self.lock, self._conn() as c:
+            return c.execute("DELETE FROM lab_records WHERE id=?", (rid,)).rowcount

@@ -7,6 +7,10 @@ Validates:
 - Deadlock breaking via preemption
 - Custom process creation and kill reclamation
 """
+try:                                      # temporary database for the tests (must run before `import app`)
+    from tests import _isolation  # noqa: F401
+except ImportError:
+    import _isolation  # noqa: F401
 import unittest
 
 from simulator import servers as server_catalog

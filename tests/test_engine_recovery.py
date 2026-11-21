@@ -6,6 +6,10 @@ Validates:
 - Recovery state machine idempotency and 3-sample confirmation streak (RECOVERING -> RECOVERED)
 - Reset behavior and episode cleanup
 """
+try:                                      # temporary database for the tests (must run before `import app`)
+    from tests import _isolation  # noqa: F401
+except ImportError:
+    import _isolation  # noqa: F401
 import unittest
 
 from simulator import servers as server_catalog
@@ -105,7 +109,76 @@ class TestEngineRecovery(unittest.TestCase):
         self.assertIsNone(self.engine.episode)
         self.assertEqual(len(self.engine.episodes), 0)
         self.assertEqual(self.engine.health, 0)
+        self.assertIsNone(self.engine.last_recovery)
+
+    def test_reset_during_recovering_clears_recovery_and_prevents_leak(self):
+        """Reset while recovery is in-flight cancels recovery and leaks no timers or escalation."""
+        self.engine.set_controls({"cpu_workload": 150})
+        self.engine.tick()
+        self.engine.tick()
+
+        ok, msg = self.engine.recover()
+        self.assertTrue(ok)
+        self.assertIsNotNone(self.engine.last_recovery)
+        self.assertEqual(self.engine.last_recovery["status"], "RECOVERING")
+
+        self.engine.reset()
+        self.assertIsNone(self.engine.last_recovery)
+        self.assertIsNone(self.engine.recovery_public())
+        self.assertIsNone(self.engine.episode)
+        self.assertEqual(len(self.engine.episodes), 0)
+
+        # Subsequent ticks must not resurrect recovery or trigger verification/flush
+        for _ in range(5):
+            self.engine.tick()
+        self.assertIsNone(self.engine.last_recovery)
+        self.assertEqual(self.engine.health, 0)
+
+    def test_reset_after_recovered_clears_recovery_state(self):
+        """Reset after recovery completes cleans up last_recovery so subsequent sessions start fresh."""
+        self.engine.set_controls({"cpu_workload": 150})
+        self.engine.tick()
+        self.engine.tick()
+
+        self.engine.recover()
+        # Tick until recovered (takes ~5 ticks due to control inertia and 3-sample confirmation)
+        for _ in range(10):
+            self.engine.tick()
+            if self.engine.last_recovery and self.engine.last_recovery["status"] == "RECOVERED":
+                break
+        self.assertIsNotNone(self.engine.last_recovery)
+        self.assertEqual(self.engine.last_recovery["status"], "RECOVERED")
+
+        self.engine.reset()
+        self.assertIsNone(self.engine.last_recovery)
+        self.assertIsNone(self.engine.recovery_public())
+
+    def test_new_incident_after_reset_operates_cleanly(self):
+        """After reset, a new incident creates a clean episode and new recovery gets next unique sequence ID."""
+        # First cycle: incident, recovery, reset
+        self.engine.set_controls({"cpu_workload": 150})
+        self.engine.tick()
+        self.engine.tick()
+        self.engine.recover()
+        first_rec_id = self.engine.last_recovery["id"]
+
+        self.engine.reset()
+        self.assertIsNone(self.engine.last_recovery)
+
+        # Second cycle: trigger new incident
+        self.engine.set_controls({"cpu_workload": 150})
+        self.engine.tick()
+        self.engine.tick()
+        self.assertGreaterEqual(self.engine.health, 1)
+        self.assertIsNotNone(self.engine.episode)
+
+        ok, _ = self.engine.recover()
+        self.assertTrue(ok)
+        self.assertIsNotNone(self.engine.last_recovery)
+        self.assertEqual(self.engine.last_recovery["status"], "RECOVERING")
+        self.assertEqual(self.engine.last_recovery["id"], first_rec_id + 1)
 
 
 if __name__ == "__main__":
     unittest.main()
+

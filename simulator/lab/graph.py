@@ -147,6 +147,13 @@ _N = [
      "Time per I/O including queueing. It explodes as utilization approaches 100%."),
     ("iowait_procs", "Processes in I/O wait", "procs", "DERIVED", "disk", ["io_queue"], "min(5, io_queue / 2)",
      "Processes sleeping (WAITING) until their I/O completes."),
+    ("disk_used", "File system used", "%", "SIMULATED", "disk", ["procs_table"],
+     "62% at boot + log files written by created log writers (1% of the disk per second, accelerated), max 100%",
+     "Capacity, not speed: when the file system is full, every new write fails at once with ENOSPC "
+     "(\"No space left on device\"). Disk latency does not rise. Deleting a file frees its blocks only "
+     "when no process still has it open."),
+    ("disk_free_gb", "Free disk space", "GB", "DERIVED", "disk", ["disk_used"], "(100% − used) × file-system size",
+     "Space left for new data; at 0 GB every write fails."),
     # ---- network
     ("rtt", "Network latency (RTT)", "ms", "DERIVED", "network", ["net_delay"], "base RTT + added latency ± jitter",
      "Round-trip time between clients and the server."),
@@ -182,8 +189,10 @@ _N = [
     ("timeouts", "Timeouts", "/s", "DERIVED", "service", ["response_ms", "timeout_ms"],
      "served × P(response > timeout): service time ~ exponential(mean), network delay enumerated over retransmissions",
      "Requests that take longer than the client is willing to wait."),
-    ("error_rate", "Error rate", "%", "DERIVED", "service", ["timeouts", "accept_backlog", "conn_fail", "lock_wait", "capacity"],
-     "1 − successful / attempts  (timeouts + refused + connection failures + deadlocked lock waits)",
+    ("error_rate", "Error rate", "%", "DERIVED", "service", ["timeouts", "accept_backlog", "conn_fail", "lock_wait", "capacity",
+                                                           "disk_used"],
+     "1 − successful / attempts  (timeouts + refused + connection failures + deadlocked lock waits + "
+     "writes refused by a full disk (39% of requests write))",
      "Share of request attempts that fail."),
     ("throughput", "Throughput", "req/s", "DERIVED", "service", ["req_eff", "error_rate"], "successful requests per second",
      "Useful work completed."),

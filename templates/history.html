@@ -4,13 +4,19 @@
 <div class="page wide">
   <div class="page-head">
     <div>
+      <div class="crumbs">Analysis</div>
       <h1>Experiment History</h1>
-      <div class="q">Review recorded runs, replay them, and compare snapshots.</div>
+      <div class="q">Recorded runs, replays, snapshots, strategy comparisons and kernel experiments.</div>
     </div>
   </div>
   <section class="card" style="padding:0;overflow:hidden">
     <div class="card-head" style="padding:18px 22px 0"><h2>Recorded runs</h2><span class="aside">{{ server.id }} · stored in SQLite · click a run for charts, timeline and replay</span></div>
     <div id="runs"><div class="state-box" style="margin:0 22px 22px"><span class="spinner"></span>Loading runs…</div></div>
+  </section>
+  <section class="card flush" style="margin-top:20px">
+    <div class="card-head"><h2>Recovery comparisons &amp; kernel experiments</h2><span class="aside">saved automatically by Fix & verify and the Kernel Failure Lab</span></div>
+    <div id="recs"><div class="state-box" style="margin:0 22px 22px"><span class="spinner"></span>Loading…</div></div>
+    <div id="recDetail" style="padding:0 24px"></div>
   </section>
   <section class="card" style="margin-top:20px">
     <div class="card-head"><h2>Snapshots</h2><span class="aside">tick 2–4 snapshots to compare them</span></div>
@@ -31,7 +37,7 @@
     let rows;
     try { rows = await OS.api("/api/lab/runs"); }
     catch (e) { $("runs").innerHTML = '<div class="state-box err" style="margin:0 22px 22px"><div class="st-t">Could not load runs</div>The simulator did not respond.</div>'; return; }
-    if (!rows.length) { $("runs").innerHTML = '<div class="state-box" style="margin:0 22px 22px"><div class="st-t">No runs yet</div>Use <b>Record</b> in the System Lab to save a run.</div>'; return; }
+    if (!rows.length) { $("runs").innerHTML = '<div class="state-box" style="margin:0 22px 22px"><div class="st-t">No runs yet</div>Use <b>Record</b> in the Control Room to save a run.</div>'; return; }
     $("runs").innerHTML = `<div class="tbl-wrap"><table class="data"><thead><tr><th>Run</th><th>Date / time</th><th>Experiment</th><th>Type</th><th>Duration</th><th>Worst state</th><th>Primary failure</th><th>Detection</th><th>Recovery</th><th></th></tr></thead><tbody>
       ${rows.map(r => `<tr class="clickable" data-id="${r.id}" tabindex="0"><td class="mono">#${r.id}</td><td class="mono">${OS.esc(r.created)}</td><td><b>${OS.esc(r.name)}</b>${r.replay_of ? `<span class="sub">replay of #${r.replay_of}</span>` : ""}</td>
         <td>${OS.esc(r.kind)}</td><td class="mono">${LAB.secs(r.duration_s)}</td><td>${LAB.pill(r.peak_health, r.peak_health)}</td><td>${OS.esc(r.primary_failure || "—")}</td>
@@ -49,7 +55,7 @@
   async function loadSnaps() {
     try { snaps = await OS.api("/api/lab/snapshots"); } catch (e) { $("snaps").textContent = "Could not load snapshots."; return; }
     $("snaps").innerHTML = snaps.length ? `<div class="chips small">${snaps.map(s => `<button type="button" data-s="${s.id}" class="${pick.has(s.id) ? "sel" : ""}">#${s.id} · ${OS.esc(s.name)}</button>`).join("")}</div>`
-      : "No snapshots yet — use <b>Record → Save snapshot</b> in the System Lab (e.g. once in NORMAL, once under high CPU, once in CRITICAL).";
+      : "No snapshots yet — use <b>Record → Save snapshot</b> in the Control Room (e.g. once in NORMAL, once under high CPU, once in CRITICAL).";
     cmp();
   }
   $("snaps").addEventListener("click", e => { const b = e.target.closest("[data-s]"); if (!b) return; const id = Number(b.dataset.s); pick.has(id) ? pick.delete(id) : pick.size < 4 && pick.add(id); loadSnaps(); });
@@ -73,7 +79,18 @@
     $("legacy").innerHTML = `<div class="tbl-wrap"><table class="data compact"><thead><tr><th>ID</th><th>Date / time</th><th>Failure</th><th>Severity</th><th>Detection</th><th>Recovery</th></tr></thead><tbody>${rows.map(r =>
       `<tr class="clickable" onclick="location.href='/experiment/${r.id}'"><td class="mono">#${r.id}</td><td class="mono">${OS.esc(r.timestamp)}</td><td>${OS.esc(r.failure_name)}</td><td>${OS.esc(r.severity)}</td><td class="mono">${LAB.secs(r.detection_latency)}</td><td class="mono">${LAB.secs(r.recovery_time)}</td></tr>`).join("")}</tbody></table></div>`;
   }
-  loadRuns(); loadSnaps(); loadLegacy();
+  async function loadRecs() {
+    let rows = [];
+    try { rows = await OS.api("/api/lab/records"); } catch (e) { $("recs").innerHTML = '<div class="state-box err" style="margin:0 22px 22px">Could not load.</div>'; return; }
+    const STR = {}; (LAB.meta.strategies || []).forEach(x => (STR[x.id] = x.name));
+    const out = r => r.kind === "kernel" ? `${LAB.pill(r.summary.outcome === "RECOVERED" ? "RECOVERED" : /NO PANIC/.test(r.summary.outcome) ? "WARNING" : "FAILED", r.summary.outcome)} <span class="small muted">${r.summary.panics} panic(s) · downtime ${LAB.secs(r.summary.downtime_s)}</span>`
+      : Object.entries(r.summary.outcomes || {}).map(([k, o]) => `<span class="small">${OS.esc(STR[k] || k)}: <b>${OS.esc(o)}</b></span>`).join("<br>");
+    $("recs").innerHTML = rows.length ? `<div class="tbl-wrap"><table class="data compact"><thead><tr><th>#</th><th>When</th><th>Type</th><th>Scenario</th><th>Result</th><th></th></tr></thead><tbody>${rows.map(r => `<tr><td class="mono">${r.id}</td><td class="mono small">${OS.esc(r.created)}</td><td>${r.kind === "kernel" ? "kernel experiment" : "recovery comparison"}</td><td>${OS.esc(r.summary.scenario || r.name)}</td><td>${out(r)}</td>
+        <td><button type="button" class="btn btn-ghost btn-xs bad" data-rdel="${r.id}">Delete</button></td></tr>`).join("")}</tbody></table></div>`
+      : '<div class="state-box" style="margin:0 22px 22px"><div class="st-t">Nothing yet</div>Run a comparison in <a href="/recovery">Fix &amp; verify</a> or an experiment in the <a href="/kernel">Kernel Failure Lab</a>.</div>';
+  }
+  $("recs").addEventListener("click", e => { const d = e.target.closest("[data-rdel]"); if (d) OS.api("/api/lab/records/" + d.dataset.rdel, { method: "DELETE" }).then(loadRecs); });
+  loadRuns(); loadRecs(); loadSnaps(); loadLegacy();
 })();
 </script>
 {% endblock %}

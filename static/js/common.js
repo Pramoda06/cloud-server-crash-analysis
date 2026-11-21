@@ -69,7 +69,7 @@ OS.setTopHealth = function (h, exp) {
   const el = OS.$("topHealth");
   if (el) { el.className = "pill " + h; el.innerHTML = `<span class="dot"></span><span>${OS.esc(h)}</span>`; }
   const live = OS.$("navLive"), se = OS.$("sideExp");
-  if (live) live.hidden = !exp;
+  if (live) live.hidden = !(h && !["HEALTHY", "OFFLINE", "NEUTRAL", "—"].includes(h));   // a failure is active → Incident
   if (se) se.textContent = exp ? "Experiment running: " + exp : "";
 };
 OS.pollHealth = async function () {

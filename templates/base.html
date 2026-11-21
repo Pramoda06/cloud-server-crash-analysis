@@ -4,54 +4,66 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Cloud Server Crash Analysis{% endblock %} · OS Case Study</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%232f5bd3'/%3E%3Cpath d='M5 13h3l2-5 4 9 2-4h3' fill='none' stroke='white' stroke-width='2'/%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%23121a2b'/%3E%3Cpath d='M5 13h3l2-5 4 9 2-4h3' fill='none' stroke='%237aa2ff' stroke-width='2'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
-<body>
+{#- Six destinations. Only the labs share a tab bar. Every old URL redirects to its new home. -#}
+{%- set SECTION_OF = {"overview": "overview", "lab": "control", "incident": "incident",
+                      "processes": "labs", "deadlock": "labs", "kernel": "labs", "cases": "labs", "history": "history"} -%}
+{%- set TABS = {"labs": [("/processes", "processes", "Processes"), ("/deadlock", "deadlock", "Deadlock"), ("/kernel", "kernel", "Kernel panic")]} -%}
+{%- set section = SECTION_OF.get(page, "") -%}
+<body data-page="{{ page }}" data-section="{{ section }}">
 <div class="shell">
   <aside class="sidebar">
     <a class="brand" href="/">
       <span class="brand-mark" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13h4l2.5-6 4.5 11 2.5-5H21"/></svg>
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13h4l2.5-6 4.5 11 2.5-5H21"/></svg>
       </span>
       <span>
-        <span class="brand-title">Cloud Server Crash Analysis</span>
-        <span class="brand-sub">Interactive OS failure lab</span>
+        <span class="brand-title">Crash Analysis</span>
+        <span class="brand-sub">an operating-system lab</span>
       </span>
     </a>
 
     <nav class="nav" aria-label="Main">
-      <div class="nav-group">Laboratory</div>
-      <a href="/" class="{{ 'active' if page == 'overview' }}"><span class="n">1</span>Overview</a>
-      <a href="/lab" class="{{ 'active' if page == 'lab' }}"><span class="n">2</span>System Lab<span class="live-dot" id="navLive" hidden></span></a>
-      <a href="/monitor" class="{{ 'active' if page == 'monitor' }}"><span class="n">3</span>Live Monitoring</a>
-      <a href="/analysis" class="{{ 'active' if page == 'analysis' }}"><span class="n">4</span>Failure Analysis</a>
-      <a href="/processes" class="{{ 'active' if page == 'processes' }}"><span class="n">5</span>Process &amp; Resource Lab</a>
-      <a href="/history" class="{{ 'active' if page == 'history' }}"><span class="n">6</span>Experiment History</a>
+      <a href="/" class="{{ 'active' if section == 'overview' }}"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>Overview</a>
+      <a href="/lab" class="{{ 'active' if section == 'control' }}"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>Control Room</a>
+      <a href="/incident" class="{{ 'active' if section == 'incident' }}"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2.5 20h19L12 3z"/><path d="M12 10v4M12 17h0"/></svg>Incident<span class="live-dot" id="navLive" hidden title="A failure is active"></span></a>
+      <a href="/processes" class="{{ 'active' if section == 'labs' }}"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.8 3h10.4a2 2 0 0 0 1.8-3l-5-9V3"/><path d="M7.5 15h9"/></svg>Labs</a>
+      <a href="/history" class="{{ 'active' if section == 'history' }}"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 8v4l2.5 2.5"/></svg>History</a>
     </nav>
 
-    <div class="side-server">
-      <label class="nav-group" for="serverPick">Server</label>
-      <select id="serverPick" aria-label="Select server">
-        {% for s in servers %}<option value="{{ s.db_id }}"{{ ' selected' if s.db_id == server.db_id }}>{{ s.id }} · {{ s.name }}</option>{% endfor %}
-        <option value="add">+ Add Server…</option>
-      </select>
-    </div>
+    <button type="button" class="demo-btn" id="btnDemo"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>Guided demo</button>
 
-    <a class="side-status" href="/lab" id="sideStatus">
-      <span class="ss-k">{{ server.id }}</span>
-      <span id="topHealth" class="pill NEUTRAL"><span class="dot"></span><span>—</span></span>
-      <span class="ss-exp" id="sideExp"></span>
-    </a>
+    <div class="side-foot">
+      <div class="side-server">
+        <label class="side-k" for="serverPick">Server</label>
+        <select id="serverPick" aria-label="Select server">
+          {% for s in servers %}<option value="{{ s.db_id }}"{{ ' selected' if s.db_id == server.db_id }}>{{ s.id }} · {{ s.name }}</option>{% endfor %}
+          <option value="add">+ Add server…</option>
+        </select>
+      </div>
+      <a class="side-status" href="/incident" id="sideStatus">
+        <span class="ss-k">{{ server.id }}</span>
+        <span id="topHealth" class="pill NEUTRAL"><span class="dot"></span><span>—</span></span>
+        <span class="ss-exp" id="sideExp"></span>
+      </a>
+    </div>
   </aside>
 
   <main class="main">
+    {% if TABS.get(section) %}
+    <div class="page wide section-bar"><nav class="section-tabs" aria-label="Labs">
+      {% for href, pid, label in TABS[section] %}<a href="{{ href }}" class="{{ 'sel' if pid == page }}"{% if pid == page %} aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}
+    </nav></div>
+    {% endif %}
     {% block content %}{% endblock %}
   </main>
 </div>
 <script src="{{ url_for('static', filename='vendor/chart.umd.min.js') }}"></script>
 <script src="{{ url_for('static', filename='js/common.js') }}"></script>
 <script src="{{ url_for('static', filename='js/lab-core.js') }}"></script>
+<script src="{{ url_for('static', filename='js/demo.js') }}"></script>
 <div class="conn-lost" id="connLost" hidden>Connection to the simulator lost — is app.py still running? Retrying…</div>
 {% block scripts %}{% endblock %}
 </body>

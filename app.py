@@ -15,6 +15,7 @@ import webbrowser
 
 from flask import Flask, abort, jsonify, redirect, render_template, request
 
+from casestudies import store as case_store
 from simulator import config
 from simulator import servers as server_catalog
 from simulator.lab import programs
@@ -24,13 +25,26 @@ from simulator.scenarios import SEVERITY_INFO, public_catalog
 from simulator.storage import Store
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "database", "experiments.db")
+DB_PATH = os.environ.get("OS_EXPERIMENTS_DB") or os.path.join(BASE_DIR, "database", "experiments.db")
 
 app = Flask(__name__)
 app.config["JSON_SORT_KEYS"] = False
 store = Store(DB_PATH, default_server=server_catalog.DEFAULT_SERVER)
 manager = ServerManager(store)
 SERVER_COOKIE = "os_server"
+
+
+def configure_storage(new_store=None, new_manager=None):
+    """Allows test fixtures to inject an isolated Store and ServerManager without touching production DB."""
+    global store, manager
+    orig_store, orig_manager = store, manager
+    if new_store is not None:
+        store = new_store
+    if new_manager is not None:
+        manager = new_manager
+    elif new_store is not None:
+        manager = ServerManager(store)
+    return orig_store, orig_manager
 
 
 def current():
@@ -70,24 +84,62 @@ def overview():
     return page("overview.html", "overview", server_rows=manager.list())
 
 
+@app.route("/experiments")
+def experiments():                 # v5: failures are injected from the Control Room; guided stories from the sidebar
+    return redirect("/lab")
+
+
 @app.route("/lab")
 def lab():
     return page("lab.html", "lab")
 
 
 @app.route("/monitor")
-def monitor():
-    return page("monitor.html", "monitor")
+def monitor():                      # merged into the Control Room (metric picker on its chart)
+    return redirect("/lab")
+
+
+@app.route("/incident")
+def incident():
+    """One page per incident: what failed → why → fix → verified."""
+    return page("incident.html", "incident", rid=request.args.get("run", type=int))
 
 
 @app.route("/analysis")
-def analysis():
-    return page("analysis.html", "analysis", rid=request.args.get("run", type=int))
+def analysis():                     # old URL: now the "Why" part of the Incident page
+    rid = request.args.get("run", type=int)
+    return redirect("/incident" + (f"?run={rid}" if rid else ""))
 
 
 @app.route("/processes")
 def processes():
     return page("processes.html", "processes")
+
+
+@app.route("/deadlock")
+def deadlock():
+    return page("deadlock.html", "deadlock")
+
+
+@app.route("/recovery")
+def recovery_lab():                 # old URL: now the "Fix" part of the Incident page
+    return redirect("/incident#fix")
+
+
+@app.route("/kernel")
+def kernel_lab():
+    return page("kernel.html", "kernel")
+
+
+@app.route("/cases")
+def cases():
+    return page("cases.html", "cases")
+
+
+@app.route("/api/cases")
+def api_cases():
+    """Real Kernel Bug Case Studies (historical dataset subset) — read-only, independent of the simulator."""
+    return jsonify(case_store.load())
 
 
 @app.route("/builder")
@@ -138,7 +190,8 @@ def api_lab_state():
 
 @app.route("/api/lab/controls", methods=["POST"])
 def api_lab_controls():
-    return reply(*current().set_controls(body()))
+    ok, val = current().set_controls(body())
+    return reply(ok, val, code_fail=400)
 
 
 @app.route("/api/lab/action", methods=["POST"])
@@ -170,6 +223,15 @@ def api_lab_thresholds():
 @app.route("/api/lab/reset", methods=["POST"])
 def api_lab_reset():
     return reply(*current().recover())
+
+
+@app.route("/api/lab/clean", methods=["POST"])
+def api_lab_clean():
+    """Start a fresh experiment: the seeded initial state (clears the timeline, failures and recoveries)."""
+    eng = current()
+    if eng.offline:
+        return reply(False, "This server is offline")
+    return reply(*eng.reset())
 
 
 @app.route("/api/lab/pause", methods=["POST"])
@@ -277,6 +339,42 @@ def api_lab_snapshot_delete(sid):
     return reply(True, store.delete_snapshot(sid))
 
 
+@app.route("/api/lab/strategy", methods=["POST"])
+def api_lab_strategy():
+    b = body()
+    return reply(*current().apply_strategy(b.get("id"), b.get("params")))
+
+
+@app.route("/api/lab/compare", methods=["POST"])
+def api_lab_compare():
+    b = body()
+    try:
+        return reply(True, current().compare_strategies(b.get("scenario"), b.get("strategies") or []))
+    except ValueError as ex:
+        return reply(False, str(ex), 400)
+
+
+@app.route("/api/lab/kernel", methods=["POST"])
+def api_lab_kernel():
+    return reply(*current().kernel_op(body()))
+
+
+@app.route("/api/lab/records")
+def api_lab_records():
+    return jsonify(store.records(server_id=current().server_id, kind=request.args.get("kind")))
+
+
+@app.route("/api/lab/records/<int:rid>")
+def api_lab_record_get(rid):
+    r = store.record(rid)
+    return jsonify(r) if r else (jsonify({"error": "not found"}), 404)
+
+
+@app.route("/api/lab/records/<int:rid>", methods=["DELETE"])
+def api_lab_record_delete(rid):
+    return reply(True, store.delete_record(rid))
+
+
 @app.route("/api/health")
 def api_health():
     eng = current()
@@ -342,7 +440,7 @@ def main():
     manager.start()
     url = f"http://127.0.0.1:{args.port}"
     print("=" * 64)
-    print(" Cloud Server Crash Analysis — interactive OS failure laboratory")
+    print(" Cloud Server Crash Analysis - interactive OS failure laboratory")
     print(f" Open {url} in your browser   (Ctrl+C to stop)")
     print(f" Database: {DB_PATH}")
     print("=" * 64)

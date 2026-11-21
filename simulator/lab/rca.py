@@ -6,24 +6,35 @@ the trigger inputs, the threshold crossings, the detector transitions, the attri
 from .detect import HEALTH, LEVELS, RULES
 from .graph import NODES
 
+CONCURRENT_SAMPLES = 4      # 2 s at 0.5 s per sample: independent failures this close are reported as concurrent
+
 PRIMARY_KEY = {"cpu": ["cpu_util", "run_queue", "cpu_wait", "response_ms"],
                "memory": ["mem_util", "page_faults", "paging_overhead", "response_ms"],
                "disk": ["disk_util", "io_queue", "disk_latency", "response_ms"],
+               "disk_space": ["disk_used", "disk_free_gb", "disk_latency", "error_rate"],
                "network": ["rtt", "packet_loss", "retrans_ms", "error_rate"],
                "service": ["req_eff", "accept_backlog", "response_ms", "error_rate"],
                "process": ["workers_alive", "capacity", "error_rate", "availability"],
-               "deadlock": ["lock_wait", "blocked_procs", "response_ms", "error_rate"]}
+               "deadlock": ["lock_wait", "blocked_procs", "response_ms", "error_rate"],
+               "kernel": ["availability", "error_rate", "workers_alive", "throughput"]}
 
 RECOVERY_TEXT = {
     "cpu": "Runnable work fell below the CPU capacity, so the run queue drained and waiting time fell.",
     "memory": "The working set shrank back below physical RAM; pages were faulted back in and paging stopped.",
     "disk": "I/O demand fell below the device capacity; the backlog was served and latency returned to normal.",
+    "disk_space": "The log writer was stopped (closing its files) and the log files were deleted, so their blocks "
+                  "were returned to the file system and writes succeed again.",
     "network": "Path delay and loss were removed; retransmissions and timeouts stopped.",
     "service": "Arrivals fell below worker capacity (or capacity returned); the request backlog drained.",
     "process": "The terminated processes were restarted (TERMINATED → RESTARTING → RUNNING with new PIDs).",
+    "kernel": "The machine was rebooted: firmware, kernel, root filesystem (journal replay), PID 1 and the services "
+              "started again from a clean state; volatile state from before the panic was lost.",
     "deadlock": "The circular wait was broken (victim terminated / lock released or pre-empted); blocked "
                 "processes were granted their locks.",
 }
+
+
+EXTRA_LABELS = {"workers_alive": {"label": "Web workers alive", "unit": ""}}
 
 
 def _fmt(v, unit):
@@ -70,7 +81,7 @@ def build_rca(ep, eng):
     observed = []
     if prim:
         for k in PRIMARY_KEY[prim]:
-            n = NODES.get(k, {"label": k, "unit": ""})
+            n = NODES.get(k) or EXTRA_LABELS.get(k, {"label": k, "unit": ""})
             if k in pv and pv[k] is not None and base.get(k) is not None:
                 observed.append({"key": k, "label": n["label"], "unit": n["unit"], "baseline": round(base[k], 2),
                                  "peak": pv[k],
@@ -94,15 +105,26 @@ def build_rca(ep, eng):
         detection = {"rule": RULES[prim]["name"], "logic": RULES[prim]["logic"],
                      "thresholds": {RULES[prim]["checks"][k][0] if k in RULES[prim]["checks"] else k: v
                                     for k, v in th.items()},
-                     "confirm": "a level counts only after it is seen in 2 consecutive samples (0.5 s apart)",
+                     "confirm": "a level counts only after it is seen in 2 consecutive samples (0.5 s apart); once raised, "
+                                "it clears only when the value falls 5 % below its threshold (hysteresis)",
                      "first": fd}
+    # independent root causes that reached failure within CONCURRENT_SAMPLES of each other cannot be ordered
+    # reliably (each rule needs 2 samples to confirm and metrics ramp at different speeds):
+    # report them together instead of presenting the tie-break order (detect.ORDER) as a cause
+    prims = ep.get("primaries") or ([prim] if prim else [])
+    ftick = ep.get("first_failed_tick") or {}           # sample numbers: exact in live and headless runs
+    concurrent = [r for r in prims if prim and r in ftick and prim in ftick
+                  and abs(ftick[r] - ftick[prim]) <= CONCURRENT_SAMPLES]
+    concurrent = concurrent if len(concurrent) > 1 else []
     chain = (ep.get("peak_trace") or {}).get("sentences") or []
     final = HEALTH[eng.health] if ep.get("active") else "HEALTHY"
     return {
         "primary": {"rule": prim, "name": RULES[prim]["name"] if prim else None,
                     "subsystem": RULES[prim]["subsystem"] if prim else None,
                     "via": (ep.get("attribution") or {}).get(prim, {}).get("via") if prim else None,
-                    "others": [RULES[r]["name"] for r in (ep.get("primaries") or [])[1:]]},
+                    "others": [RULES[r]["name"] for r in (ep.get("primaries") or [])[1:]],
+                    "concurrent": [RULES[r]["name"] for r in concurrent],
+                    "concurrent_subsystems": [RULES[r]["subsystem"] for r in concurrent]},
         "trigger": {"text": trig["text"] if trig else "no operator input in the preceding 30 s",
                     "inputs": [i["text"] for i in (ep.get("trigger") or {}).get("inputs", [])]},
         "observed": observed, "symptoms": sym_txt,

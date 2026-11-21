@@ -2,3 +2,9 @@ venv/
 __pycache__/
 *.pyc
 .system_generated/
+# SyzFix raw shard and local-only excerpts: never committed (see docs/SYZFIX.md)
+data/raw/
+data/local/
+# SQLite rollback journals are transient; delivery scratch folder
+database/*.db-journal
+_to_delete/

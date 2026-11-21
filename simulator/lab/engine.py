@@ -26,6 +26,8 @@ from . import detect, programs
 from .detect import HEALTH, LEVELS, RULES, Detector
 from .graph import CASCADE_EDGES, NODES, SUBSYSTEMS, controls_spec, layers
 from .model import DT, SystemModel
+from . import recovery as strategies
+from .kernel import KernelSim, catalogue as kernel_catalogue
 from .rca import build_rca
 from .trace import trace
 
@@ -36,7 +38,7 @@ SAMPLE_KEYS = ["cpu_util", "cpu_demand", "run_queue", "cpu_wait", "cpu_wait_web"
                "io_queue", "disk_latency", "rtt", "packet_loss", "retrans_ms", "req_eff", "throughput", "req_failed",
                "timeouts", "error_rate", "availability", "response_ms", "service_ms", "queue_wait", "accept_backlog",
                "capacity", "inflight", "lock_wait", "paging_penalty", "running_procs", "blocked_procs",
-               "terminated_procs", "workers_alive", "iowait_procs", "mem_ws"]
+               "terminated_procs", "workers_alive", "iowait_procs", "mem_ws", "disk_used", "disk_free_gb"]
 CONTROL_KEYS = ["cpu_workload", "cpu_procs", "web_nice", "mem_demand", "mem_procs", "disk_read", "disk_write",
                 "req_rate", "net_delay", "net_loss", "conn_fail", "timeout_ms"]
 WARMUP_TICKS = 12
@@ -92,6 +94,7 @@ class LabEngine:
         self.input_events = deque(maxlen=200)    # (ts, tick, text, node) — candidate triggers
         self.recent = deque(maxlen=12)           # (V, P) of the last samples
         self.boot_ts = time.time()               # simulated uptime starts here (and again after a recovery)
+        self.kernel = KernelSim(self)
         self._reset_state(initial=True)
 
     # =============================================================== reset ==
@@ -105,9 +108,12 @@ class LabEngine:
         self.episodes = []
         self.episode = None
         self.stress = None
+        self.last_recovery = None
+        self.last_run_id = None
         self.epoch += 1
         self.first_seen = {}
         self.first_failed = {}
+        self.first_failed_tick = {}               # sample number of first failure level (orders concurrent causes)
         self._frozen_idle = {}
         self.V, self.P, self.X, self.det, self.att = {}, {}, {}, None, {}
         # warm up silently to the steady state, then capture the BASELINE used for "why did it change?"
@@ -135,14 +141,16 @@ class LabEngine:
             if self.recording:
                 self.stop_recording(reason="reset")
             self.paused = False
-            cascade, anchor, order = self.model.cascade, self.model.anchor, self.model.lock_ordering
+            keep = {k: getattr(self.model, k) for k in SETTING_KEYS}
             self._reset_state(seed=seed)
             self.boot_ts = time.time()
-            self.model.cascade, self.model.anchor, self.model.lock_ordering = cascade, anchor, order
+            for k, v in keep.items():
+                setattr(self.model, k, v)
+            self.kernel.reset()
             return True, "Recovery complete"
 
     # ============================================================ recovery ==
-    REC_KEYS = ["cpu_util", "mem_util", "disk_util", "run_queue", "io_queue", "disk_latency", "rtt", "response_ms",
+    REC_KEYS = ["cpu_util", "mem_util", "disk_util", "disk_used", "run_queue", "io_queue", "disk_latency", "rtt", "response_ms",
                 "error_rate", "availability", "throughput", "running_procs", "blocked_procs", "terminated_procs",
                 "workers_alive"]
 
@@ -153,7 +161,7 @@ class LabEngine:
         return {"health": HEALTH[self.health],
                 "values": {k: rnd(self.V.get(k)) for k in self.REC_KEYS},
                 "failed_procs": [{"name": p["name"], "state": p["state"]} for p in snap["processes"]
-                                 if p["state"] in ("TERMINATED", "RESTARTING", "CRASHING")],
+                                 if p["state"] in ("TERMINATED", "RESTARTING", "CRASHING", "HUNG")],
                 "blocked_procs": [p["name"] for p in snap["processes"] if p["state"] == "BLOCKED"],
                 "locks_held": sum(1 for r in snap["resources"] if r["holder"] is not None),
                 "deadlock": [names.get(x, x) for x in cyc],
@@ -170,6 +178,8 @@ class LabEngine:
         with self.lock:
             if self.offline:
                 return False, "This server is offline"
+            if self.kernel.down:
+                return False, "The simulated kernel has panicked — reboot it in the Kernel Failure Lab (or reset that lab)"
             now = time.time()
             ep = self.episode
             M = self.model
@@ -210,6 +220,10 @@ class LabEngine:
                 M.kill(p["pid"], "SIGTERM")
             if extra:
                 actions.append("Stopped the extra processes created during the session: " + ", ".join(p["name"] for p in extra))
+            if M.disk_logs_closed > 0:            # their log files stay on disk until deleted
+                freed, _, _ = M.delete_logs()
+                actions.append(f"Deleted the log files they wrote: {freed:.1f}% of the file system "
+                               f"({freed / 100 * float(self.server.get('storage_gb', 250)):,.0f} GB) freed")
             # 4. release every lock (breaks a deadlock: waiting processes are granted, then release too)
             if before["deadlock"] or before["locks_held"] or before["blocked_procs"]:
                 for _ in range(len(M.locks) + 2):
@@ -225,7 +239,13 @@ class LabEngine:
                 actions.append(("Broke the deadlock (circular wait " + " → ".join(before["deadlock"]) + ") and released all locks")
                                if before["deadlock"] else
                                f"Released {before['locks_held']} held lock(s) and woke {len(before['blocked_procs'])} blocked process(es)")
-            # 5. restart failed processes (master first: it restarts its workers too)
+            # 5. restart failed processes (master first: it restarts its workers too); hung ones are killed first
+            hung = [p for p in M.procs.values() if p["state"] == "HUNG"]
+            for p in hung:
+                if p["state"] == "HUNG":
+                    M.kill(p["pid"], "SIGKILL")
+            if hung:
+                actions.append("Killed unresponsive (HUNG) processes: " + ", ".join(p["name"] for p in hung))
             dead = [p for p in M.procs.values() if p["state"] == "TERMINATED" and not p["kind"].startswith("custom")]
             restarted = []
             for p in sorted(dead, key=lambda q: (q["kind"] != "master", q["pid"])):
@@ -269,12 +289,109 @@ class LabEngine:
             }
             return True, "Recovery started"
 
+    # ---------------------------------------------- targeted strategies ==
+    def apply_strategy(self, sid, params=None):
+        """Apply ONE failure-specific recovery strategy to the live simulation and start verifying it.
+        Unlike the generic Recovery, nothing else is changed: if other problems exist they remain."""
+        with self.lock:
+            if self.offline:
+                return False, "This server is offline"
+            if getattr(self, "kernel", None) and self.kernel.down:
+                return False, "The simulated kernel has panicked — use the Kernel Failure Lab to reboot"
+            st = strategies.STRATEGIES.get(sid)
+            if st is None:
+                return False, "Unknown recovery strategy"
+            rule = st["rule"]
+            ep = self.episode
+            failure = None
+            if ep is not None:
+                cur = dict(ep)
+                cur["rca"] = build_rca(cur, self)
+                failure = _episode_public(cur)
+            before = self._rec_snapshot()
+            before["controls"] = dict(self.model.controls)
+            params = dict(params or {})
+            if params.get("victim") is not None and rule == "deadlock":
+                v = self._proc_by(params["victim"])
+                params["victim"] = v["pid"] if v else None
+            try:
+                actions, side = strategies.apply(self.model, sid, params)
+            except ValueError as ex:
+                self._drain_model_events()
+                return False, str(ex)
+            if self.stress:                     # the strategy took over the controls the stress had set
+                for k in list(self.stress["targets"]):
+                    if abs(self.model.controls[k] - self.stress["targets"][k]) > 1e-9:
+                        self.stress["targets"].pop(k)
+                        self.stress["prev"].pop(k, None)
+                if not self.stress["targets"]:
+                    self.stress = None
+            self._drain_model_events()
+            self.emit("RECOVERY", f"Recovery strategy applied: {st['name']} — " + "; ".join(actions), "info",
+                      marker="recovery", data={"strategy": sid})
+            self._input(f"Recovery strategy: {st['name']}", "recovery")
+            self._rec({"op": "action", "action": "strategy", "id": sid})
+            self.recovery_seq += 1
+            self.last_recovery = {
+                "id": self.recovery_seq, "requested_ts": time.time(), "status": "RECOVERING", "ok_streak": 0,
+                "episode_id": ep["id"] if ep is not None else None, "failure": failure, "before": before,
+                "actions": actions, "side_effects": side, "after": None, "checks": [], "verified_ts": None,
+                "recovery_time": None, "flushed": True, "mode": "strategy",
+                "strategy": {k: st[k] for k in ("id", "name", "category", "does", "when", "rule")},
+                "target_name": RULES[rule]["name"], "target_active": self.det["rules"][rule]["confirmed"] > 0,
+                "verify": strategies.new_verification(rule),
+                "failure_duration": (time.time() - ep["start_ts"]) if ep is not None else None,
+            }
+            return True, f"{st['name']}: " + "; ".join(actions)
+
+    def _verify_strategy(self, rec, now):
+        v = rec["verify"]
+        out = strategies.judge(v, self.det)
+        if self.health == 0 and rec.get("healthy_ts") is None:
+            rec["healthy_ts"] = now
+        if out is None:
+            return
+        R = self.det["rules"]
+        tgt = v["target"]
+        f = lambda k, unit="": _short(self.V.get(k), unit)
+        others = [RULES[r]["name"] for r, x in R.items() if x["confirmed"] > 0 and r != tgt]
+        rec["checks"] = [
+            {"ok": R[tgt]["confirmed"] == 0, "label": f"{RULES[tgt]['name']} cleared",
+             "detail": "; ".join(detect.evidence(R[tgt])) or f"below WARNING for {v['t_ok']} consecutive samples"},
+            {"ok": R["service"]["confirmed"] == 0, "label": "Service responding to clients",
+             "detail": f"error rate {f('error_rate', '%')}, response {f('response_ms', 'ms')}"},
+            {"ok": not others, "label": "No other active failures", "detail": ", ".join(others) or "none"},
+            {"ok": out == "RECOVERED", "label": f"System status: {HEALTH[self.health]}",
+             "detail": f"{strategies.VERIFY_SAMPLES} consecutive healthy samples required"},
+        ]
+        rec["after"] = self._rec_snapshot()
+        rec["verified_ts"] = now
+        rec["status"] = out
+        rec["recovery_time"] = now - rec["requested_ts"]
+        txt = {"RECOVERED": "server HEALTHY", "PARTIAL": f"{RULES[tgt]['name']} fixed, but other failures remain",
+               "FAILED": f"{RULES[tgt]['name']} NOT fixed"}[out]
+        self.emit("RECOVERY", f"Strategy verified ({rec['strategy']['name']}): {txt} after {rec['recovery_time']:.1f} s",
+                  "ok" if out == "RECOVERED" else "warn")
+
+    def compare_strategies(self, scenario, ids):
+        res = strategies.compare(self.server, scenario, ids, seed=self.seed)
+        summary = {"scenario": res["scenario"]["name"], "best": res["best"],
+                   "outcomes": {r["strategy"]: r["outcome"] for r in res["runs"]}}
+        try:
+            res["record_id"] = self.store.save_record(self.server_id, "comparison",
+                                                      f"Recovery comparison · {res['scenario']['name']}", summary, res)
+        except Exception:
+            res["record_id"] = None
+        return res
+
     def _verify_recovery(self, now):
         """Health check after a Recovery: the server counts as recovered only after every detection
         rule is below its warning level in 3 consecutive samples (same rule as a normal episode)."""
         rec = self.last_recovery
         if not rec or rec["status"] != "RECOVERING":
             return
+        if rec.get("mode") == "strategy":
+            return self._verify_strategy(rec, now)
         rec["ok_streak"] = rec["ok_streak"] + 1 if self.health == 0 else 0
         if rec["ok_streak"] == 1:
             rec["healthy_ts"] = now               # first sample with every rule back below its warning level
@@ -321,7 +438,7 @@ class LabEngine:
 
     def recovery_public(self):
         rec = self.last_recovery
-        return None if rec is None else {k: v for k, v in rec.items() if k != "ok_streak"}
+        return None if rec is None else {k: v for k, v in rec.items() if k not in ("ok_streak", "verify")}
 
     # ============================================================== events ==
     def emit(self, kind, msg, level="info", marker=None, data=None):
@@ -352,10 +469,20 @@ class LabEngine:
         with self.lock:
             if self.offline:
                 return False, "This server is offline"
+            if not isinstance(values, dict):
+                return False, "Invalid controls payload: expected a JSON object"
             out = {}
-            for k, v in (values or {}).items():
+            for k, v in values.items():
+                if isinstance(v, bool):
+                    label = "Disk I/O" if k == "disk_io" else (self.spec.get(k, {}).get("label") or k)
+                    return False, f"{label}: value must be a finite number"
                 if k == "disk_io":            # Basic-mode combined disk slider (% of capacity)
-                    pct = float(v)
+                    try:
+                        pct = float(v)
+                        if not math.isfinite(pct):
+                            raise ValueError("not finite")
+                    except (TypeError, ValueError):
+                        return False, "Disk I/O: value must be a finite number"
                     cap = self.server["disk_iops_capacity"]
                     out["disk_write"] = self.model.set_control("disk_write", cap * pct / 100 * 0.65)
                     out["disk_read"] = self.model.set_control("disk_read", cap * pct / 100 * 0.35)
@@ -384,7 +511,8 @@ class LabEngine:
                 self._input(txt, k)
                 self.ctl_logged[k] = new
                 if log.isEnabledFor(logging.INFO) and self._debug:
-                    log.info(f"[SIMULATION] {self.server['id']}: {txt}")
+                    plain = txt.replace("\u2192", "->")
+                    log.info(f"[SIMULATION] {self.server['id']}: {plain}")
 
     _debug = False
 
@@ -402,13 +530,22 @@ class LabEngine:
             if self.offline:
                 return False, "This server is offline"
             a = body.get("action")
+            if a == "strategy":                 # recorded recovery strategy (replays)
+                return self.apply_strategy(body.get("id"), body.get("params"))
+            if self.kernel.down and a not in ("dl_detect",):
+                return False, ("The simulated kernel is down (" + self.kernel.stage + "): no process can be created, "
+                               "scheduled or take locks until the reboot completes")
             M = self.model
             p = None
             try:
                 if a == "create":
                     p = M.create_process(body.get("kind", "cpu"))
+                    if p["kind"] == "custom_logflood" and body.get("rate") is not None:   # replay of a disk-full stress
+                        p["load"] = max(0.1, min(5.0, float(body["rate"])))
                     msg = f"Created {p['name']} (PID {p['pid']})"
-                elif a in ("kill", "restart", "renice", "acquire", "release"):
+                elif a in DL_ACTIONS:
+                    msg = self._deadlock_action(a, body)
+                elif a in ("kill", "restart", "renice", "acquire", "release", "hang"):
                     p = self._proc_by(body.get("target") if body.get("target") is not None else body.get("pid"))
                     if p is None:
                         return False, "No such process"
@@ -418,23 +555,28 @@ class LabEngine:
                     elif a == "restart":
                         M.restart(p["pid"])
                         msg = f"Restarting {p['name']}"
+                    elif a == "hang":
+                        M.hang(p["pid"])
+                        msg = f"{p['name']} is now unresponsive (HUNG)"
                     elif a == "renice":
                         M.renice(p["pid"], body.get("nice", 0))
                         msg = f"{p['name']} reniced"
                     elif a == "acquire":
-                        M.acquire(p["pid"], body.get("rid"))
-                        msg = f"{p['name']} requested Resource {body.get('rid')}"
+                        n = body.get("count", 1)
+                        res = M.acquire(p["pid"], body.get("rid"), n)
+                        msg = f"{p['name']} requested {n} × {body.get('rid')} → {res}"
                     else:
-                        M.release(p["pid"])
-                        msg = f"{p['name']} released its locks"
+                        M.release(p["pid"], body.get("rid"), body.get("count"))
+                        msg = f"{p['name']} released " + (f"{body.get('rid')}" if body.get("rid") else "its locks")
                 elif a == "preempt":
-                    M.preempt(body.get("rid"))
+                    v = self._proc_by(body.get("victim")) if body.get("victim") is not None else None
+                    M.preempt(body.get("rid"), v["pid"] if v else None)
                     msg = f"Resource {body.get('rid')} pre-empted"
                 elif a == "form_deadlock":
                     M.form_deadlock(bool(body.get("three")))
                     msg = "Lock sequence applied: circular wait formed"
                 elif a == "resolve_deadlock":
-                    msg = self._resolve_deadlock(body.get("how", "victim"))
+                    msg = self._resolve_deadlock(body.get("how", "victim"), body.get("victim"), body.get("rid"))
                 elif a == "reap":
                     M.reap()
                     msg = "Terminated processes reaped"
@@ -446,25 +588,107 @@ class LabEngine:
             self._drain_model_events()
             self.emit("ACTION", msg, "info")
             self._input(msg, "procs_table" if a not in ("acquire", "release", "preempt", "form_deadlock",
-                                                          "resolve_deadlock") else "locks")
+                                                          "resolve_deadlock") + DL_ACTIONS else "locks")
             rec = {k: v for k, v in body.items()}
             if "target" not in rec and body.get("pid") is not None and p is not None and a not in ("create",):
                 rec["target"] = p["name"]
             self._rec({"op": "action", **rec})
             return True, msg
 
-    def _resolve_deadlock(self, how):
-        cyc = self.X.get("cycle") or []
-        if not cyc:
-            raise ValueError("There is no circular wait to resolve")
-        procs = [self.model.procs[p] for p in cyc if p in self.model.procs]
-        victim = max(procs, key=lambda p: p["pid"])      # newest transaction = least work to roll back
+    def _resolve_deadlock(self, how, victim=None, rid=None):
+        """Deadlock RECOVERY (after detection). Victim = the one chosen by the student, otherwise the
+        cheapest deadlocked process: fewest resource instances held (least work lost), newest on a tie."""
+        M = self.model
+        dead = M.deadlock_report()["deadlocked"]
+        if not dead:
+            raise ValueError("No deadlock detected — there is nothing to resolve")
+        if victim is not None:
+            v = self._proc_by(victim)
+            if v is None or v["pid"] not in dead:
+                raise ValueError("Choose a victim from the deadlocked set: " + ", ".join(M._short(p) for p in dead))
+        else:
+            cost = lambda pid: (sum(r["alloc"].get(pid, 0) for r in M.locks.values()), -pid)
+            v = M.procs[min(dead, key=cost)]
+        why = "" if victim is not None else " (auto: holds the fewest instances)"
         if how == "preempt":
-            rid = victim["holds"][0]
-            self.model.preempt(rid)
-            return f"Deadlock resolved by pre-empting Resource {rid} from {victim['name']}"
-        self.model.kill(victim["pid"], "SIGKILL")
-        return f"Deadlock resolved: victim {victim['name']} terminated and rolled back, its locks released"
+            rid = rid or next((h for h in v["holds"]
+                               if any(M.procs[w].get("waiting_for") == h for w in dead if w != v["pid"])), None) \
+                or (v["holds"][0] if v["holds"] else None)
+            if rid is None:
+                raise ValueError(f"{v['name']} holds nothing that can be pre-empted")
+            M.preempt(rid, v["pid"])
+            return f"Deadlock recovery by pre-emption: took {rid} from {M._short(v['pid'])}{why} and rolled it back"
+        M.kill(v["pid"], "SIGKILL")
+        return f"Deadlock recovery by termination: victim {M._short(v['pid'])}{why} aborted, its resources released"
+
+    def _deadlock_action(self, a, b):
+        M = self.model
+        pid = lambda: (self._proc_by(b.get("target")) or {}).get("pid")
+        if a == "dl_add_process":
+            p = M.add_txn(b.get("name"), b.get("max"))
+            return f"Transaction {M._short(p['pid'])} created (PID {p['pid']})"
+        if a == "dl_remove_process":
+            if pid() is None:
+                raise ValueError("No such process")
+            M.remove_txn(pid())
+            return "Transaction removed"
+        if a == "dl_set_max":
+            if pid() is None:
+                raise ValueError("No such process")
+            M.set_max(pid(), b.get("max") or {})
+            return "Maximum claim declared"
+        if a == "dl_add_resource":
+            r = M.add_resource(b.get("rid"), b.get("label"), b.get("instances", 1))
+            return f"Resource {r['id']} added ({r['instances']} instance{'s' if r['instances'] > 1 else ''})"
+        if a == "dl_remove_resource":
+            M.remove_resource(b.get("rid"))
+            return f"Resource {b.get('rid')} removed"
+        if a == "dl_reset":
+            M.reset_locks()
+            M.events.append(("RESOURCE", "Deadlock Lab reset: P1–P3, resources A–C, nothing allocated", "info"))
+            return "Deadlock Lab reset"
+        if a == "dl_example":
+            return self._dl_example(b.get("which", "two"))
+        if a == "dl_detect":
+            r = M.deadlock_report()
+            txt = ("DEADLOCK: " + ", ".join(M._short(p) for p in r["deadlocked"]) + " can never finish") \
+                if r["deadlocked"] else ("cycle in the graph but NO deadlock (enough instances can be freed)"
+                                         if r["any_cycle"] else "no deadlock")
+            M.events.append(("RESOURCE", f"Detection algorithm run by the student: {txt}", "fail" if r["deadlocked"] else "ok"))
+            return "Detection: " + txt
+        raise ValueError("Unknown action")
+
+    def _dl_example(self, which):
+        M = self.model
+        M.reset_locks()
+        P = {M._short(p): p for p in M.procs if M.procs[p]["kind"] == "txn"}
+        if which == "two":
+            M.form_deadlock(False)
+            return "Example: P1 holds A and wants B, P2 holds B and wants A"
+        if which == "three":
+            M.form_deadlock(True)
+            return "Example: 3-process circular wait P1 → P2 → P3 → P1"
+        if which == "multi":
+            # a cycle that is NOT a deadlock: R has 2 instances and P3 (not waiting) will return one
+            M.add_resource("R", "Database connection pool", 2)
+            M.add_resource("S", "Printer spooler slot", 1)
+            M.acquire(P["P1"], "R")
+            M.acquire(P["P2"], "S")
+            M.acquire(P["P3"], "R")
+            M.acquire(P["P1"], "S")
+            M.acquire(P["P2"], "R")
+            return "Example: cycle P1 → P2 → P1 with a 2-instance resource — the cycle is NOT a deadlock"
+        if which == "banker":
+            # the textbook example (Silberschatz): 12 tape drives, maximum claims 10 / 4 / 9
+            M.add_resource("T", "Tape drives", 12)
+            for k, mx, n in (("P1", 10, 5), ("P2", 4, 2), ("P3", 9, 2)):
+                M.set_max(P[k], {"T": mx}, quiet=True)
+                M.acquire(P[k], "T", n)
+            self.model.avoidance = True
+            M.events.append(("SETTING", "Avoidance ON — Banker's algorithm checks every request. Safe sequence: "
+                                        "P2, P1, P3. Try: P3 requests 1 more tape drive.", "info"))
+            return "Example: Banker's algorithm, 12 tape drives (avoidance ON)"
+        raise ValueError("Unknown example")
 
     def _drain_model_events(self):
         for kind, msg, lvl in self.model.events:
@@ -476,6 +700,8 @@ class LabEngine:
         with self.lock:
             if kind not in programs.STRESS_KINDS:
                 return False, "Unknown stress type"
+            if self.kernel.down:
+                return False, "The simulated kernel is down — wait for the reboot or reset the Kernel Failure Lab"
             intensity = max(0.0, min(100.0, float(intensity)))
             if kind == "process":
                 victims = ["web-worker-1"] if intensity < 40 else ["web-worker-1", "web-worker-2"] if intensity < 75 \
@@ -495,6 +721,15 @@ class LabEngine:
                     return False, str(ex)
                 self._drain_model_events()
                 msg = "STRESS INJECTED: deadlock (opposite-order lock acquisition)"
+            elif kind == "diskfull":
+                p = self.model.create_process("logflood")
+                p["load"] = round(0.5 + 1.5 * intensity / 100.0, 2)        # % of the file system per second
+                p["info"] = (f"writes log files nonstop: fills {p['load']:g} % of the file system per second "
+                             "(accelerated) (just created)")
+                self._rec({"op": "action", "action": "create", "kind": "logflood", "rate": p["load"]})
+                self._drain_model_events()
+                msg = (f"STRESS INJECTED: disk space exhaustion — {p['name']} writes log files at "
+                       f"{p['load']:g} % of the file system per second")
             else:
                 t = programs.stress_targets(kind, intensity, self.server, self.model.controls)
                 prev = {k: self.model.controls[k] for k in t}
@@ -521,17 +756,24 @@ class LabEngine:
     # ============================================================ settings ==
     def settings(self, body):
         with self.lock:
-            for k in ("cascade", "anchor", "lock_ordering"):
+            for k in SETTING_KEYS:
                 if k in body:
+                    if k == "avoidance" and body[k]:
+                        bk = self.model.banker()
+                        if not bk["declared"]:
+                            return False, ("Declare a maximum claim for every transaction first (missing: "
+                                           + ", ".join(bk["missing"]) + ")")
                     setattr(self.model, k, bool(body[k]))
                     label = {"cascade": "Cross-subsystem cascades", "anchor": "Host-anchored baseline (HYBRID)",
-                             "lock_ordering": "Lock-ordering policy (deadlock prevention)"}[k]
+                             "lock_ordering": "Lock-ordering policy (deadlock prevention)",
+                             "avoidance": "Banker's algorithm (deadlock avoidance)",
+                             "txn_autocomplete": "Transactions finish on their own"}[k]
                     self.emit("SETTING", f"{label} {'ON' if body[k] else 'OFF'}", "info")
                     self._rec({"op": "setting", "key": k, "value": bool(body[k])})
             return True, self.settings_dict()
 
     def settings_dict(self):
-        return {"cascade": self.model.cascade, "anchor": self.model.anchor, "lock_ordering": self.model.lock_ordering}
+        return {k: getattr(self.model, k) for k in SETTING_KEYS}
 
     def set_threshold(self, body):
         with self.lock:
@@ -573,11 +815,19 @@ class LabEngine:
             self._run_program_tick()
         if self.stress and self.stress["until_tick"] is not None and M.tick >= self.stress["until_tick"]:
             self.clear_stress()
+        self.kernel.before_step()
         self._log_control_changes()
         V, P, X = M.step()
         V["run_queue_per_core"] = V["run_queue"] / self.server["vcpus"]
+        if self.kernel.host_halted:              # no telemetry from a halted host: the agent ran on it
+            for k in HOST_KEYS:
+                V[k] = None
+        X["kernel_level"], X["kernel_stage"] = self.kernel.level(), self.kernel.stage
+        # what made the simulated kernel panic, when the scenario has a resource cause (OOM → panic_on_oom)
+        X["kernel_cause"] = "memory" if self.kernel.scenario == "oom_panic" and self.kernel.stage != "RUNNING" else None
         self._drain_model_events()
         det = self.detector.evaluate(V, M.snapshot(), X)
+        self.kernel.after_step(V, det)
         # attribution compares with the state just BEFORE the current failure episode began
         refV, refP = (self.episode["pre_V"], self.episode["pre_P"]) if self.episode else \
             (self.recent[0] if self.recent else (self.base_V, self.base_P))
@@ -586,6 +836,7 @@ class LabEngine:
         if self.episode is not None:
             self.episode["first_seen"] = dict(self.episode.get("first_seen", {}), **{k: v for k, v in self.first_seen.items() if k not in self.episode.get("first_seen", {})})
             self.episode["first_failed"] = dict(self.episode.get("first_failed", {}), **{k: v for k, v in self.first_failed.items() if k not in self.episode.get("first_failed", {})})
+            self.episode["first_failed_tick"] = dict(self.episode.get("first_failed_tick", {}), **{k: v for k, v in self.first_failed_tick.items() if k not in self.episode.get("first_failed_tick", {})})
         self.recent.append((V, P))
         now = time.time()
         self._threshold_events(det, now)
@@ -596,9 +847,11 @@ class LabEngine:
                 self.first_seen[t["rule"]] = now
             if up and t["to"] >= 2 and t["rule"] not in self.first_failed:
                 self.first_failed[t["rule"]] = now
+                self.first_failed_tick[t["rule"]] = M.tick
             if t["to"] == 0:
                 self.first_seen.pop(t["rule"], None)
                 self.first_failed.pop(t["rule"], None)
+                self.first_failed_tick.pop(t["rule"], None)
             self.emit("DETECTION", f"{r} → {LEVELS[t['to']]}" + (": " + "; ".join(t["evidence"]) if up and t["evidence"] else ""),
                       "fail" if t["to"] >= 3 else "warn" if t["to"] >= 1 else "ok",
                       data={"rule": t["rule"], "from": t["from"], "to": t["to"]}, marker="detect" if up else None)
@@ -704,9 +957,18 @@ class LabEngine:
             ep["peak"], ep["peak_ts"] = h, now
             ep["peak_values"] = {k: rnd(self.V.get(k)) for k in SAMPLE_KEYS}
             ep["peak_controls"] = dict(self.model.controls)
-            ep["peak_trace"] = trace(self._key_metric(ep["primary"]), self.V, self.P, self.base_V, self.base_P)
+            # keep the state at the worst moment so the chain can be re-traced once the primary is known
+            ep["peak_VP"] = (dict(self.V), {k: dict(v) for k, v in self.P.items()})
+            ep["peak_det"] = {r: [{"key": c["key"], "level": c["level"]} for c in x["checks"]] for r, x in self.det["rules"].items()}
+            ep["peak_trace_key"] = self._key_metric(ep["primary"], ep["peak_det"])
+            ep["peak_trace"] = trace(ep["peak_trace_key"], self.V, self.P, self.base_V, self.base_P)
             ep["recovery_start_ts"] = None
-        elif h < ep["peak"] and ep["recovery_start_ts"] is None:
+        if ep.get("peak_VP") and ep["primary"] and self._key_metric(ep["primary"], ep["peak_det"]) != ep.get("peak_trace_key"):
+            # the episode's first sample often comes before attribution has found the primary cause:
+            # re-trace the worst moment from the primary's key metric (no guessing from a later state)
+            ep["peak_trace_key"] = self._key_metric(ep["primary"], ep["peak_det"])
+            ep["peak_trace"] = trace(ep["peak_trace_key"], ep["peak_VP"][0], ep["peak_VP"][1], self.base_V, self.base_P)
+        if h < ep["peak"] and ep["recovery_start_ts"] is None:
             ep["recovery_start_ts"] = now
             self.emit("RECOVERY", f"Recovery started: health improving ({HEALTH[ep['peak']]} → {HEALTH[h]})", "info",
                       marker="recovery")
@@ -754,7 +1016,7 @@ class LabEngine:
         store = ep.get("frozen") or {}
         cur = {r: {"by": a["by"], "via": a["via"], "input": a["input"]} for r, a in store.items()}
         for r, a in cur.items():
-            if a["by"] and a["by"] not in cur:
+            if a["by"] and a["by"] not in cur and not (a["by"] == "kernel" and self.kernel.down):
                 a["by"] = None
         return detect.break_cycles(cur, ep.get("first_failed", {}), ep.get("first_seen", {}))
 
@@ -773,7 +1035,7 @@ class LabEngine:
         last_input = self.input_events[-1]["ts"] if self.input_events else 0
         if lowered and now - last_input >= 20 and now - ep.get("last_bad_check", now) < 1:
             loop = ["requests time out", "clients retry", "arrivals exceed worker capacity", "backlog stays full"]
-            if self.V["mem_ws"] > 80 and self.model.cascade:
+            if (self.V.get("mem_ws") or 0) > 80 and self.model.cascade:
                 loop = ["in-flight requests hold memory", "memory thrashes", "workers slow down"] + loop[1:]
             ep["metastable"] = {"ts": now, "loop": loop}
             self.emit("METASTABLE", "Self-sustaining failure: the trigger was reduced but the system stays failed — "
@@ -781,15 +1043,17 @@ class LabEngine:
                                     "shorten retries (raise the timeout) or restart the web service.", "fail",
                       marker="metastable")
 
-    def _key_metric(self, rule):
+    def _key_metric(self, rule, det_rules=None):
         """The node to trace for a rule: its worst check (mapped to a graph node)."""
         if rule is None:
             return "response_ms"
-        r = self.det["rules"][rule]
+        r = {"checks": det_rules[rule]} if det_rules and rule in det_rules else self.det["rules"][rule]
         if rule == "process":
             return "capacity"
         if rule == "deadlock":
             return "lock_wait"
+        if rule == "kernel":
+            return "availability"
         best = max(r["checks"], key=lambda c: c["level"]) if r["checks"] else None
         k = best["key"] if best else PRIMARY_METRIC[rule]
         return {"run_queue_per_core": "run_queue"}.get(k, k)
@@ -811,7 +1075,7 @@ class LabEngine:
             self.reset(seed=seed)
             M = self.model
             for k, v in (prog.get("settings") or {}).items():
-                if k in ("cascade", "anchor", "lock_ordering"):
+                if k in SETTING_KEYS:
                     setattr(M, k, bool(v))
             if prog.get("thresholds"):
                 self.detector.thresholds = copy.deepcopy(prog["thresholds"])
@@ -1093,12 +1357,14 @@ class LabEngine:
                 "thresholds_live": self.detector.thresholds,
             }
             out["last_recovery"] = self.recovery_public()
+            out["kernel"] = self.kernel.public()
             if full:
                 snap = M.snapshot()
                 cyc = self.X.get("cycle") or []
                 names = {p["pid"]: p["name"] for p in snap["processes"]}
                 out["processes"] = snap["processes"]
                 out["resources"] = snap["resources"]
+                out["disk_space"] = snap["disk_space"]
                 out["deadlock"] = {
                     "cycle": [names.get(p, p) for p in cyc], "age": rnd(self.X.get("cycle_age", 0.0)),
                     "edges": [{"from": names.get(a, a), "to": names.get(b, b), "resource": r} for a, b, r in self.X.get("edges", [])],
@@ -1107,6 +1373,7 @@ class LabEngine:
                                 "no_preemption": any(r["holder"] is not None for r in snap["resources"]),
                                 "circular_wait": bool(cyc)},
                     "detected": self.det["rules"]["deadlock"]["confirmed"] >= 3,
+                    "analysis": self._deadlock_public(names),
                 }
                 out["episodes"] = [_episode_public(e) for e in self.episodes[-5:]]
                 if self.episode:
@@ -1115,13 +1382,61 @@ class LabEngine:
                     out["current_episode"] = _episode_public(cur)
             return out
 
+    def kernel_op(self, b):
+        with self.lock:
+            if self.offline:
+                return False, "This server is offline"
+            K = self.kernel
+            op = b.get("op")
+            try:
+                if op == "options":
+                    return True, K.set_options(b.get("options") or {})
+                if op == "trigger":
+                    if self.runner:
+                        self._stop_runner("kernel experiment")
+                    return True, K.trigger(b.get("scenario"), b.get("recovery", "auto"))
+                if op == "power_cycle":
+                    return True, K.power_cycle()
+                if op == "fallback":
+                    return True, K.choose_fallback()
+                if op == "reset":
+                    if K.down:
+                        self.reset()
+                        return True, "Kernel lab reset (fresh boot)"
+                    K.reset()
+                    return True, "Kernel lab reset"
+            except ValueError as ex:
+                return False, str(ex)
+            return False, "Unknown kernel operation"
+
+    def _deadlock_public(self, names):
+        r = self.model.deadlock_report()
+        nm = lambda p: names.get(p, str(p)).split()[-1]
+        vec = lambda d: {k: v for k, v in (d or {}).items() if v}
+        bk = r["banker"]
+        return {
+            "deadlocked": [nm(p) for p in r["deadlocked"]], "cycle": [nm(p) for p in r["cycle"]],
+            "any_cycle": [nm(p) for p in r["any_cycle"]], "single_instance": r["single_instance"],
+            "behind": [nm(p) for p in r["behind"]], "reduction": [nm(p) for p in r["reduction"]],
+            "available": r["avail"],
+            "matrix": [{"pid": p, "name": nm(p), "alloc": vec(r["alloc"].get(p)), "request": vec(r["req"].get(p)),
+                        "max": vec(self.model.procs[p].get("max")), "need": vec(r["need"].get(p))} for p in r["alloc"]],
+            "steps": [{"name": nm(s["pid"]), "demand": s["demand"], "work_after": s["work_after"]} for s in r["steps"]],
+            "banker": None if bk is None else {"safe": bk["safe"], "sequence": [nm(p) for p in bk["sequence"]],
+                                               "stuck": [nm(p) for p in bk["stuck"]], "declared": bk["declared"],
+                                               "missing": bk["missing"]},
+            "order": self.model.order_text(),
+        }
+
     def meta(self):
         return {"controls": list(self.spec.values()), "nodes": NODES, "layers": layers(),
                 "rules": RULES, "thresholds": self.detector.thresholds, "subsystems": SUBSYSTEMS,
                 "stress_kinds": programs.STRESS_KINDS, "predefined": programs.PREDEFINED, "break": programs.BREAK,
                 "sample_keys": SAMPLE_KEYS, "control_keys": CONTROL_KEYS, "tick": DT,
                 "server": {k: v for k, v in self.server.items() if k != "profile"},
-                "levels": LEVELS, "health_names": HEALTH, "cascade_edges": sorted(CASCADE_EDGES)}
+                "levels": LEVELS, "health_names": HEALTH, "cascade_edges": sorted(CASCADE_EDGES),
+                "strategies": strategies.catalogue(), "kernel_scenarios": kernel_catalogue(),
+                "scenarios": [{k: s[k] for k in ("id", "name", "rule")} for s in strategies.SCENARIOS]}
 
     # ---- legacy-compatible fields used by the server list / sidebar
     def display_health(self):
@@ -1148,7 +1463,16 @@ class LabEngine:
         return None
 
 
-PRIMARY_METRIC = {"cpu": "run_queue", "memory": "page_faults", "disk": "disk_latency", "network": "rtt",
+HOST_KEYS = ("cpu_util", "cpu_demand", "run_queue", "run_queue_per_core", "cpu_wait", "cpu_wait_web", "mem_util",
+             "mem_ws", "mem_avail", "page_faults", "paging_overhead", "swap_iops", "disk_util", "disk_demand",
+             "read_iops", "write_iops", "io_queue", "disk_latency", "iowait_procs", "lock_wait", "paging_penalty",
+             "service_ms", "disk_used", "disk_free_gb")
+SETTING_KEYS = ("cascade", "anchor", "lock_ordering", "avoidance", "txn_autocomplete")
+DL_ACTIONS = ("dl_add_process", "dl_remove_process", "dl_set_max", "dl_add_resource", "dl_remove_resource",
+              "dl_reset", "dl_example", "dl_detect")
+
+PRIMARY_METRIC = {"kernel": "availability", "cpu": "run_queue", "memory": "page_faults", "disk": "disk_latency",
+                  "disk_space": "disk_used", "network": "rtt",
                   "service": "response_ms", "process": "error_rate", "deadlock": "lock_wait"}
 
 

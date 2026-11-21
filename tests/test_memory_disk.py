@@ -6,6 +6,10 @@ Validates behavior across boundary conditions including:
 - Paging CPU overhead ceiling (90.0%)
 - Disk multi-channel M/M/c queueing and 30-second backlog ceiling
 """
+try:                                      # temporary database for the tests (must run before `import app`)
+    from tests import _isolation  # noqa: F401
+except ImportError:
+    import _isolation  # noqa: F401
 import math
 import unittest
 

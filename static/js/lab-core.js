@@ -17,6 +17,8 @@ LAB.loadMeta = async function () {
 /* -------------------------------------------------------------- polling -- */
 LAB.onState = fn => LAB.listeners.push(fn);
 LAB.start = function (opts) {
+  if (LAB._started) return;                 // one poller per page, however many parts of the page listen
+  LAB._started = true;
   opts = opts || {};
   let timer = null;
   const poll = async () => {
@@ -45,6 +47,14 @@ LAB.start = function (opts) {
 LAB.post = async function (url, body) {
   try { return await OS.api(url, { method: "POST", body: JSON.stringify(body || {}) }); }
   catch (e) { LAB.toast(e.message, "bad"); throw e; }
+};
+/* replace a box's HTML only when it changed, keeping any <details> the reader opened or closed */
+LAB.setHTML = function (box, html) {
+  if (!box || box._html === html) return;
+  const st = {};
+  box.querySelectorAll("details > summary").forEach(sm => (st[sm.textContent] = sm.parentElement.open));
+  box.innerHTML = html; box._html = html;
+  box.querySelectorAll("details > summary").forEach(sm => { if (sm.textContent in st) sm.parentElement.open = st[sm.textContent]; });
 };
 LAB.toast = function (msg, cls) {
   let t = document.getElementById("labToast");
@@ -111,7 +121,7 @@ LAB.controlEl = function (c, opts) {
   const el = document.createElement("div");
   el.className = "lctl";
   el.dataset.key = c.key;
-  el.innerHTML = `<div class="lctl-head"><label for="rg_${c.key}">${OS.esc(c.label)}</label>
+  el.innerHTML = `<div class="lctl-head"><label for="rg_${c.key}" title="${OS.esc(c.help || "")}">${OS.esc(c.label)}</label>
       <span class="lctl-num"><button type="button" class="stp" data-d="-1" aria-label="Decrease ${OS.esc(c.label)}">−</button>
       <input type="number" id="nb_${c.key}" min="${c.min}" max="${c.max}" step="${c.step}" aria-label="${OS.esc(c.label)}">
       <span class="u">${OS.esc(c.unit)}</span>
@@ -337,8 +347,8 @@ LAB.inspect = async function (box, id, opts) {
 };
 
 /* ------------------------------------------------------------ timeline -- */
-LAB.TL_KINDS = ["CONTROL", "STRESS", "ACTION", "THRESHOLD", "DETECTION", "HEALTH", "RECOVERY", "PROCESS", "RESOURCE", "PROGRAM", "EPISODE", "METASTABLE", "SETTING", "RECORD", "SYSTEM"];
-LAB.eventRow = e => `<div class="ev ${e.level} ${["DETECTION", "HEALTH", "STRESS", "METASTABLE", "RECOVERY"].includes(e.kind) ? "key" : ""}"><div class="et">${OS.clock(e.ts)}</div><div class="ed"></div><div><span class="ek">${OS.esc(e.kind)}</span><span class="em">${OS.esc(e.msg)}</span></div></div>`;
+LAB.TL_KINDS = ["CONTROL", "STRESS", "ACTION", "THRESHOLD", "DETECTION", "HEALTH", "RECOVERY", "KERNEL", "PROCESS", "RESOURCE", "PROGRAM", "EPISODE", "METASTABLE", "SETTING", "RECORD", "SYSTEM"];
+LAB.eventRow = e => `<div class="ev ${e.level} ${["DETECTION", "HEALTH", "STRESS", "METASTABLE", "RECOVERY", "KERNEL"].includes(e.kind) ? "key" : ""}"><div class="et">${OS.clock(e.ts)}</div><div class="ed"></div><div><span class="ek">${OS.esc(e.kind)}</span><span class="em">${OS.esc(e.msg)}</span></div></div>`;
 
 /* ------------------------------------------------------- shared-axis charts -- */
 /* All charts on a page share one x-range; hovering one draws a crosshair on all of them. */
@@ -346,7 +356,7 @@ LAB.CHART_DEF = {
   cpu_util: { t: "CPU utilization", max: 100 }, run_queue: { t: "CPU run queue" }, cpu_wait: { t: "CPU waiting time" },
   response_ms: { t: "Response latency" }, mem_util: { t: "Memory utilization", max: 100 }, mem_avail: { t: "Available memory" },
   page_faults: { t: "Page fault rate" }, paging_overhead: { t: "Paging overhead (CPU time)" }, swap_iops: { t: "Swap I/O" },
-  disk_util: { t: "Disk utilization", max: 100 }, iops: { t: "Read / write IOPS", series: ["read_iops", "write_iops"], names: ["read", "write"] },
+  disk_util: { t: "Disk I/O utilization (busy time)", max: 100 }, disk_used: { t: "File system used (space)", max: 100 }, iops: { t: "Read / write IOPS", series: ["read_iops", "write_iops"], names: ["read", "write"] },
   io_queue: { t: "I/O queue length" }, disk_latency: { t: "Disk latency" }, rtt: { t: "Network latency (RTT)" },
   packet_loss: { t: "Packet loss" }, reqs: { t: "Successful vs failed requests", series: ["throughput", "req_failed"], names: ["successful /s", "failed /s"] },
   timeouts: { t: "Timeouts" }, error_rate: { t: "Error rate" }, accept_backlog: { t: "Request backlog" }, availability: { t: "Service availability", max: 100 },
@@ -355,7 +365,7 @@ LAB.CHART_DEF = {
 LAB.GROUPS = [
   ["cpu", "CPU", ["cpu_util", "run_queue", "cpu_wait", "response_ms"]],
   ["memory", "Memory", ["mem_util", "mem_avail", "page_faults", "paging_overhead", "response_ms"]],
-  ["disk", "Disk", ["disk_util", "iops", "io_queue", "disk_latency", "response_ms"]],
+  ["disk", "Disk", ["disk_util", "iops", "io_queue", "disk_latency", "disk_used", "response_ms"]],
   ["network", "Network", ["rtt", "packet_loss", "reqs", "timeouts", "error_rate"]],
   ["service", "Service", ["response_ms", "error_rate", "accept_backlog", "throughput", "availability"]],
 ];
@@ -403,6 +413,16 @@ LAB.thLines = function (k) {
   ["W", "C"].forEach(x => { if (r.t[x] != null) out.push({ v: r.t[x], c: C[x][0], l: `${C[x][1]} ${r.inv ? "<" : ">"} ${LAB.num(r.t[x])}` }); });
   return out;
 };
+/* smallest y-range per metric, so a quiet baseline is not stretched over the whole chart
+   (e.g. a run queue of 0.02 would otherwise produce axis labels 0.01, 0.01, 0.01) */
+LAB.MIN_RANGE = { cpu_wait: 20, cpu_wait_web: 20, accept_backlog: 50, inflight: 200, timeouts: 10, blocked_procs: 4,
+  lock_wait: 100, retrans_ms: 50, swap_iops: 100, req_failed: 10, queue_wait: 100, procs: 4, iops: 500 };
+LAB.suggestedMax = function (key, keys) {
+  if ((LAB.CHART_DEF[key] || {}).max != null) return undefined;
+  const r = LAB.thresholds(keys[0]);
+  if (r && !r.inv && r.t.W != null) return r.t.W * 1.15;          // the warning line is always in view
+  return LAB.MIN_RANGE[key] != null ? LAB.MIN_RANGE[key] : LAB.MIN_RANGE[keys[0]];
+};
 LAB.makeChart = function (canvas, key, all) {
   const def = LAB.CHART_DEF[key] || { t: LAB.label(key) };
   const keys = def.series || [key];
@@ -417,7 +437,7 @@ LAB.makeChart = function (canvas, key, all) {
         tooltip: { callbacks: { title: it => (it.length ? OS.clock(it[0].parsed.x) : ""), label: it => `${it.dataset.label}: ${LAB.fmt(it.dataset.key, it.parsed.y)}` } },
         labOverlay: { on: true, thresholds: LAB.thLines(key), marks: [], samples: [] } },
       scales: { x: { type: "linear", grid: { color: "#f0f2f5" }, ticks: { maxTicksLimit: 5, color: "#98a2b3", font: { size: 10 }, callback: v => OS.clock(v) } },
-        y: { beginAtZero: true, max: def.max, grid: { color: "#f0f2f5" }, ticks: { color: "#687385", font: { size: 10 }, maxTicksLimit: 5, callback: v => LAB.num(v) + (LAB.unit(keys[0]) === "%" ? "%" : "") } } },
+        y: { beginAtZero: true, max: def.max, suggestedMax: LAB.suggestedMax(key, keys), grid: { color: "#f0f2f5" }, ticks: { color: "#687385", font: { size: 10 }, maxTicksLimit: 5, callback: v => LAB.num(v) + (LAB.unit(keys[0]) === "%" ? "%" : "") } } },
     },
   });
   canvas.addEventListener("mouseleave", () => { LAB.hoverX = null; (all || []).forEach(c => c.chart.draw()); });

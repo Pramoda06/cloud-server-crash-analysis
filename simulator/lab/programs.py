@@ -20,6 +20,7 @@ import ast
 STRESS_KINDS = {
     "cpu": "CPU spike", "memory": "Memory spike", "disk": "Disk I/O spike", "network": "Network degradation",
     "traffic": "Traffic spike", "process": "Process crash", "deadlock": "Deadlock", "multi": "Multiple stressors",
+    "diskfull": "Disk space exhaustion",
 }
 
 

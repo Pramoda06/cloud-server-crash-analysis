@@ -2,6 +2,10 @@
 Tests for the network delay, packet loss, and response latency models.
 Validates behavior across boundary conditions including 0%, 5%, 20%, 50%, 90%, 99%, and 100% loss.
 """
+try:                                      # temporary database for the tests (must run before `import app`)
+    from tests import _isolation  # noqa: F401
+except ImportError:
+    import _isolation  # noqa: F401
 import math
 import unittest
 
@@ -75,6 +79,35 @@ class TestNetworkModel(unittest.TestCase):
         self.assertGreaterEqual(V["availability"], 99.0)
         self.assertLessEqual(V["error_rate"], 1.0)
         self.assertAlmostEqual(V["response_ms"], V["service_ms"] + V["rtt"], delta=2.0)
+
+    def test_control_input_validation_and_clamping(self):
+        """SystemModel.set_control validates finite inputs, clamps out-of-bound floats, and rejects non-finite/invalid values."""
+        # 1. Finite clamping
+        clamped_high = self.model.set_control("net_loss", 250.0)
+        self.assertEqual(clamped_high, 100.0)
+        self.assertEqual(self.model.controls["net_loss"], 100.0)
+
+        clamped_low = self.model.set_control("net_loss", -50.0)
+        self.assertEqual(clamped_low, 0.0)
+        self.assertEqual(self.model.controls["net_loss"], 0.0)
+
+        # 2. Rejection of non-finite floats
+        for bad_val in [float("nan"), float("inf"), float("-inf")]:
+            with self.assertRaises(ValueError):
+                self.model.set_control("net_loss", bad_val)
+
+        # 3. Rejection of non-numeric strings
+        with self.assertRaises(ValueError):
+            self.model.set_control("net_loss", "invalid_string")
+
+        # 4. Rejection of unknown keys
+        with self.assertRaises(KeyError):
+            self.model.set_control("non_existent_key", 10.0)
+
+        # 5. Rejection of boolean values accidentally passed as numbers
+        for bool_val in [True, False]:
+            with self.assertRaises(TypeError):
+                self.model.set_control("net_loss", bool_val)
 
 
 if __name__ == "__main__":

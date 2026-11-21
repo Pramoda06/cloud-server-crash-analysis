@@ -31,7 +31,7 @@
    "Cascade links: paging → disk & CPU, slow responses → in-flight memory, failures → client retries. Attribution separates the PRIMARY failure from SECONDARY ones using the recorded contributions; the engine flags self-sustaining failures."),
   ("detection", "Failure Detection", "All subsystems",
    "Monitoring compares observed metrics with thresholds, filters noise, and classifies the failure from evidence — independently of what caused it.",
-   "Every 0.5 s each rule is evaluated on observed values only; a level counts after 2 consecutive samples. Thresholds can be changed live in the System Lab (Advanced). Detection latency = detection time − the operator input that triggered it."),
+   "Every 0.5 s each rule is evaluated on observed values only; a level counts after 2 consecutive samples, and once raised it clears only when the value falls 5 % below its threshold (hysteresis, so a value hovering at a threshold does not flap). Thresholds can be changed live in the Control Room (Advanced). Detection latency = detection time − the operator input that triggered it."),
   ("recovery", "Recovery", "All subsystems",
    "Recovery removes the cause (or adds capacity) and confirms the system is healthy again.",
    "Lower the control, kill the hog, restart the service or break the deadlock. Queues drain at the rate of spare capacity, so recovery is gradual. Recovery completes when every rule reports OK for 3 consecutive samples; recovery time is measured from the first improvement."),
@@ -61,7 +61,7 @@
         <tr><td>{{ rule }} · {{ k }}</td>{% for l in ["W", "D", "C", "F"] %}<td class="num">{{ "> %g"|format(th[l]) if th[l] is not none else "—" }}</td>{% endfor %}</tr>
         {% endfor %}{% endfor %}
         </tbody></table></div>
-      <p class="small muted" style="margin:10px 0 0">Defaults from <span class="mono">simulator/lab/detect.py</span>; editable live in the System Lab (Advanced mode).</p>
+      <p class="small muted" style="margin:10px 0 0">Defaults from <span class="mono">simulator/lab/detect.py</span>; editable live in the Control Room (Advanced mode).</p>
       {% endif %}
     </section>
   {% endfor %}
